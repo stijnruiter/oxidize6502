@@ -1,8 +1,7 @@
-#[allow(dead_code)]
-
 // max size of 6502
 const MOMORY_SIZE: usize = 0xFFFF; 
 
+#[allow(dead_code)]
 pub trait Bus<T> {
     fn read_byte(&self, address: T) -> u8;
     fn write_byte(&mut self, address: T, value: u8);

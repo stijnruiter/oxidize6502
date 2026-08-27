@@ -1,6 +1,7 @@
 use crate::Bus;
 
 #[repr(u8)]
+#[allow(dead_code)]
 enum StatusFlag {
     Negative =  0x80,
     Overflow =  0x40,
@@ -14,6 +15,9 @@ enum StatusFlag {
 pub mod op_code {
     pub const LDA_IMM: u8 = 0xA9;
     pub const LDA_ZER: u8 = 0xA5;
+
+    pub const LDX_IMM: u8 = 0xA2;
+    pub const LDX_ZER: u8 = 0xA6;
 
     pub const BREAK: u8 = 0x00;
 }
@@ -53,7 +57,7 @@ impl Cpu {
         self.status = 0;
     }
 
-    pub fn next_op(&mut self, bus: &impl Bus<u16>) -> bool {
+    pub fn next_op(&mut self, bus: &impl Bus<u16>) -> u8 {
         let op = bus.read_byte(self.program_counter);
         self.program_counter += 1;
 
@@ -61,15 +65,33 @@ impl Cpu {
             op_code::LDA_IMM => {
                 let address = self.address_immediate();
                 self.op_lda(address, bus);
+                return 2;
             },
             op_code::LDA_ZER => {
                 let address = self.address_zero_page(bus);
                 self.op_lda(address, bus);
+                return 3;
             },
-            op_code::BREAK => { return false; }
+            op_code::LDX_IMM => {
+                let address = self.address_immediate();
+                self.op_ldx(address, bus);
+                return 2;
+            },
+            op_code::LDX_ZER => {
+                let address = self.address_zero_page(bus);
+                self.op_ldx(address, bus);
+                return 3;
+            },
+            op_code::BREAK => { 
+                self.set_status(StatusFlag::Break, true); 
+                return 7;
+            }
             _ => todo!()
         }
-        return true;
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.status & (StatusFlag::Break as u8) != (StatusFlag::Break as u8)
     }
 
     fn address_immediate(&mut self) -> u16 {
@@ -91,6 +113,12 @@ impl Cpu {
         self.register_a = value;
     }
 
+    fn op_ldx(&mut self, address: u16, bus: &impl Bus<u16>) {
+        let value = bus.read_byte(address);
+        self.set_status(StatusFlag::Negative, (value >> 7) == 1);
+        self.set_status(StatusFlag::Zero, value == 0);
+        self.register_x = value;
+    }
 
     fn set_status(&mut self, key: StatusFlag, value: bool) {
         if value {
@@ -117,7 +145,7 @@ mod tests {
 
     #[test]
     fn lda_imm_negative_status() {
-        let mem: [u8; 3] = [0xA9, 0x85, 0x00];
+        let mem = [0xA9, 0x85];
         let mut cpu = Cpu::new();
         cpu.next_op(&mem);
         assert_eq!(cpu.register_a, 0x85);
@@ -127,12 +155,54 @@ mod tests {
 
     #[test]
     fn lda_imm_zero_status() {
-        let mem: [u8; 3] = [0xA9, 0x00, 0x00];
+        let mem = [0xA9, 0x00];
         let mut cpu = Cpu::new();
         cpu.next_op(&mem);
         assert_eq!(cpu.register_a, 0x00);
         assert_eq!(cpu.program_counter, 2);
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
+    }
+
+    #[test]
+    fn ldx_imm() {
+        let mem: [u8; 3] = [0xA2, 0x12, 0x00];
+        let mut cpu = Cpu::new();
+        cpu.next_op(&mem);
+        assert_eq!(cpu.register_x, 0x12);
+        assert_eq!(cpu.program_counter, 2);
+        assert_eq!(cpu.status, 0);
+    }
+
+    #[test]
+    fn ldx_imm_negative_status() {
+        let mem = [0xA2, 0x85];
+        let mut cpu = Cpu::new();
+        cpu.next_op(&mem);
+        assert_eq!(cpu.register_x, 0x85);
+        assert_eq!(cpu.program_counter, 2);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+    }
+
+    #[test]
+    fn ldx_imm_zero_status() {
+        let mem = [0xA2, 0x00];
+        let mut cpu = Cpu::new();
+        cpu.next_op(&mem);
+        assert_eq!(cpu.register_x, 0x00);
+        assert_eq!(cpu.program_counter, 2);
+        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+    }
+
+    #[test]
+    fn break_set_status() {
+        let mem = [0xA9, 0x00, 0x00];
+        let mut cpu = Cpu::new();
+
+        cpu.next_op(&mem);
+        assert_eq!(cpu.is_running(), true);
+        
+        cpu.next_op(&mem);
+        assert_eq!(cpu.is_running(), false);
     }
 
     impl<const N: usize> Bus<u16> for [u8; N] {

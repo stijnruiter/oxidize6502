@@ -28,7 +28,7 @@ enum AddressMode {
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
-enum InstructionCode {
+enum Mnemonic {
     ADC, AND, ASL, BCC, BCS, BEQ, BIT, BMI, BNE, BPL, BRK, BVC, BVS, CLC,
     CLD, CLI, CLV, CMP, CPX, CPY, DEC, DEX, DEY, EOR, INC, INX, INY, JMP,
     JSR, LDA, LDX, LDY, LSR, NOP, ORA, PHA, PHP, PLA, PLP, ROL, ROR, RTI,
@@ -39,18 +39,16 @@ enum InstructionCode {
 #[derive(Clone, Copy)]
 struct Instruction {
     address_mode: AddressMode,
-    instruction: InstructionCode, 
-    bytes: u8,
+    mnemonic: Mnemonic,
     cycles: u8,
     can_cross_page: bool
 }
 
 impl Instruction {
-    pub const fn new(mode: AddressMode, instr: InstructionCode, bytes: u8, cycles: u8, cross_page: bool) -> Self {
+    pub const fn new(mode: AddressMode, mnemenic: Mnemonic, cycles: u8, cross_page: bool) -> Self {
         Self {
             address_mode: mode,
-            instruction: instr,
-            bytes: bytes,
+            mnemonic: mnemenic,
             cycles: cycles,
             can_cross_page: cross_page
         }
@@ -116,46 +114,46 @@ static INSTRUCTION_SET: [Option<Instruction>; 0xFF] = {
     let mut table: [Option<Instruction>; 0xFF] = [None; 0xFF];
 
     macro_rules! add_instruction {
-        ($code:ident, $addr:ident, $op:ident, $bytes:expr, $cycles:expr, $cross:expr) => {
-            table[op_codes::$op as usize] = Some(Instruction::new(AddressMode::$addr, InstructionCode::$code, $bytes, $cycles, $cross));
+        ($code:ident, $addr:ident, $op:ident, $cycles:expr, $cross:expr) => {
+            table[op_codes::$op as usize] = Some(Instruction::new(AddressMode::$addr, Mnemonic::$code, $cycles, $cross));
         };
     }
 
-    add_instruction!(BRK, Implied, BRK, 2, 7, false);
-    add_instruction!(NOP, Implied, NOP, 1, 2, false);
-    add_instruction!(CLC, Implied, CLC, 1, 2, false);
-    add_instruction!(CLD, Implied, CLD, 1, 2, false);
-    add_instruction!(CLI, Implied, CLI, 1, 2, false);
-    add_instruction!(CLV, Implied, CLV, 1, 2, false);
+    add_instruction!(BRK, Implied, BRK, 7, false);
+    add_instruction!(NOP, Implied, NOP, 2, false);
+    add_instruction!(CLC, Implied, CLC, 2, false);
+    add_instruction!(CLD, Implied, CLD, 2, false);
+    add_instruction!(CLI, Implied, CLI, 2, false);
+    add_instruction!(CLV, Implied, CLV, 2, false);
 
-    add_instruction!(INC, ZeroPage,  INC_ZER, 2, 5, false);
-    add_instruction!(INC, ZeroPageX, INC_ZEX, 2, 6, false);
-    add_instruction!(INC, Absolute,  INC_ABS, 3, 6, false);
-    add_instruction!(INC, AbsoluteY, INC_ABX, 3, 7, false);
+    add_instruction!(INC, ZeroPage,  INC_ZER, 5, false);
+    add_instruction!(INC, ZeroPageX, INC_ZEX, 6, false);
+    add_instruction!(INC, Absolute,  INC_ABS, 6, false);
+    add_instruction!(INC, AbsoluteY, INC_ABX, 7, false);
 
-    add_instruction!(INX, Implied, INX, 1, 2, false);
-    add_instruction!(INY, Implied, INY, 1, 2, false);
+    add_instruction!(INX, Implied, INX, 2, false);
+    add_instruction!(INY, Implied, INY, 2, false);
 
-    add_instruction!(LDX, Immediate, LDX_IMM, 2, 2, false);
-    add_instruction!(LDX, ZeroPage,  LDX_ZER, 2, 3, false);
-    add_instruction!(LDX, ZeroPageY, LDX_ZEY, 2, 4, false);
-    add_instruction!(LDX, Absolute,  LDX_ABS, 3, 4, false);
-    add_instruction!(LDX, AbsoluteY, LDX_ABY, 3, 4, true);
+    add_instruction!(LDX, Immediate, LDX_IMM, 2, false);
+    add_instruction!(LDX, ZeroPage,  LDX_ZER, 3, false);
+    add_instruction!(LDX, ZeroPageY, LDX_ZEY, 4, false);
+    add_instruction!(LDX, Absolute,  LDX_ABS, 4, false);
+    add_instruction!(LDX, AbsoluteY, LDX_ABY, 4, true);
 
-    add_instruction!(LDY, Immediate, LDY_IMM, 2, 2, false);
-    add_instruction!(LDY, ZeroPage,  LDY_ZER, 2, 3, false);
-    add_instruction!(LDY, ZeroPageX, LDY_ZEX, 2, 4, false);
-    add_instruction!(LDY, Absolute,  LDY_ABS, 3, 4, false);
-    add_instruction!(LDY, AbsoluteX, LDY_ABX, 3, 4, true);
+    add_instruction!(LDY, Immediate, LDY_IMM, 2, false);
+    add_instruction!(LDY, ZeroPage,  LDY_ZER, 3, false);
+    add_instruction!(LDY, ZeroPageX, LDY_ZEX, 4, false);
+    add_instruction!(LDY, Absolute,  LDY_ABS, 4, false);
+    add_instruction!(LDY, AbsoluteX, LDY_ABX, 4, true);
 
-    add_instruction!(LDA, Immediate, LDA_IMM, 2, 2, false);
-    add_instruction!(LDA, ZeroPage,  LDA_ZER, 2, 3, false);
-    add_instruction!(LDA, ZeroPageX, LDA_ZEX, 2, 4, false);
-    add_instruction!(LDA, Absolute,  LDA_ABS, 3, 4, false);
-    add_instruction!(LDA, AbsoluteX, LDA_ABX, 3, 4,  true);
-    add_instruction!(LDA, AbsoluteY, LDA_ABY, 3, 4,  true);
-    add_instruction!(LDA, IndirectX, LDA_INX, 2, 6, false);
-    add_instruction!(LDA, IndirectY, LDA_INY, 2, 5,  true);
+    add_instruction!(LDA, Immediate, LDA_IMM, 2, false);
+    add_instruction!(LDA, ZeroPage,  LDA_ZER, 3, false);
+    add_instruction!(LDA, ZeroPageX, LDA_ZEX, 4, false);
+    add_instruction!(LDA, Absolute,  LDA_ABS, 4, false);
+    add_instruction!(LDA, AbsoluteX, LDA_ABX, 4,  true);
+    add_instruction!(LDA, AbsoluteY, LDA_ABY, 4,  true);
+    add_instruction!(LDA, IndirectX, LDA_INX, 6, false);
+    add_instruction!(LDA, IndirectY, LDA_INY, 5,  true);
 
     table
 };
@@ -206,7 +204,7 @@ impl Cpu {
         match &INSTRUCTION_SET[next_instruction as usize] {
             Some(instr) => {
                 let address = self.get_address(instr.address_mode, bus);
-                self.execute_op(instr.instruction, address.address, bus);
+                self.execute_op(instr.mnemonic, address.address, bus);
                 
                 if instr.can_cross_page && address.page_crossed {
                     Ok (instr.cycles + 1)
@@ -220,8 +218,8 @@ impl Cpu {
         }
     }
 
-    fn execute_op(&mut self, instruction: InstructionCode, address: u16, bus: &mut impl Bus<u16>) {
-        use InstructionCode::*;
+    fn execute_op(&mut self, instruction: Mnemonic, address: u16, bus: &mut impl Bus<u16>) {
+        use Mnemonic::*;
         match instruction {
             ADC => { todo!(); }, 
             AND => { todo!(); }, 

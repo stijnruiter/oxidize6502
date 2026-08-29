@@ -124,6 +124,23 @@ pub mod op_codes {
     pub const ASL_ZEX: u8 = 0x16;
     pub const ASL_ABS: u8 = 0x0E;
     pub const ASL_ABX: u8 = 0x1E;
+    
+    pub const CMP_IMM: u8 = 0xC9;
+    pub const CMP_ZER: u8 = 0xC5;
+    pub const CMP_ZEX: u8 = 0xD5;
+    pub const CMP_ABS: u8 = 0xCD;
+    pub const CMP_ABX: u8 = 0xDD;
+    pub const CMP_ABY: u8 = 0xD9;
+    pub const CMP_INX: u8 = 0xC1;
+    pub const CMP_INY: u8 = 0xD1;
+
+    pub const CPX_IMM: u8 = 0xE0;
+    pub const CPX_ZER: u8 = 0xE4;
+    pub const CPX_ABS: u8 = 0xEC;
+
+    pub const CPY_IMM: u8 = 0xC0;
+    pub const CPY_ZER: u8 = 0xC4;
+    pub const CPY_ABS: u8 = 0xCC;
 }
 
 static INSTRUCTION_SET: [Option<Instruction>; 0xFF] = {
@@ -186,6 +203,23 @@ static INSTRUCTION_SET: [Option<Instruction>; 0xFF] = {
     add_instruction!(ASL, Absolute,    ASL_ABS, 6, false);
     add_instruction!(ASL, AbsoluteX,   ASL_ABX, 7, false);
 
+    add_instruction!(CMP, Immediate, CMP_IMM, 2, false); 
+    add_instruction!(CMP, ZeroPage,  CMP_ZER, 3, false); 
+    add_instruction!(CMP, ZeroPageX, CMP_ZEX, 4, false); 
+    add_instruction!(CMP, Absolute,  CMP_ABS, 4, false); 
+    add_instruction!(CMP, AbsoluteX, CMP_ABX, 4, true);
+    add_instruction!(CMP, AbsoluteY, CMP_ABY, 4, true);
+    add_instruction!(CMP, IndirectX, CMP_INX, 6, false);
+    add_instruction!(CMP, IndirectY, CMP_INY, 5, true);
+
+    add_instruction!(CPX, Immediate, CPX_IMM, 2, false); 
+    add_instruction!(CPX, ZeroPage,  CPX_ZER, 3, false); 
+    add_instruction!(CPX, Absolute,  CPX_ABS, 4, false);
+
+    add_instruction!(CPY, Immediate, CPY_IMM, 2, false); 
+    add_instruction!(CPY, ZeroPage,	 CPY_ZER, 3, false); 
+    add_instruction!(CPY, Absolute,	 CPY_ABS, 4, false);
+    
     table
 };
 
@@ -255,19 +289,12 @@ impl Cpu {
                 self.set_status(StatusFlag::Zero, self.register_a == 0);
             }, 
             ASL => {
-                let asl_impl = |cpu: &mut Self, value: u8| {
-                    let new_value = value << 1;
-                    cpu.set_status(StatusFlag::Carry, value >> 7 == 1);
-                    cpu.set_status(StatusFlag::Negative, new_value >> 7 == 1);
-                    cpu.set_status(StatusFlag::Zero, new_value == 0);
-                    return new_value;
-                };
-
                 if instruction.address_mode == AddressMode::Accumulator {
-                    self.register_a = asl_impl(self, self.register_a);
-                } else {
+                    self.register_a = self.asl_value(self.register_a);
+                } 
+                else {
                     let mut value = bus.read_byte(address_result.address);
-                    value = asl_impl(self, value);
+                    value = self.asl_value(value);
                     bus.write_byte(address_result.address, value);
                 }
             }, 
@@ -285,9 +312,9 @@ impl Cpu {
             CLD => { self.set_status(StatusFlag::Decimal, false); },
             CLI => { self.set_status(StatusFlag::Interrupt, false); },
             CLV => { self.set_status(StatusFlag::Overflow, false); },
-            CMP => { todo!(); }, 
-            CPX => { todo!(); }, 
-            CPY => { todo!(); }, 
+            CMP => { self.compare(self.register_a, bus.read_byte(address_result.address)) }, 
+            CPX => { self.compare(self.register_x, bus.read_byte(address_result.address)) }, 
+            CPY => { self.compare(self.register_y, bus.read_byte(address_result.address)) }, 
             DEC => { todo!(); }, 
             DEX => { todo!(); }, 
             DEY => { todo!(); }, 
@@ -338,6 +365,14 @@ impl Cpu {
         self.set_status(StatusFlag::Negative, (value >> 7) == 1);
         self.set_status(StatusFlag::Zero, value == 0);
         return value;
+    }
+    
+    fn asl_value(&mut self, value: u8) -> u8 {
+        let new_value = value << 1;
+        self.set_status(StatusFlag::Carry, value >> 7 == 1);
+        self.set_status(StatusFlag::Negative, new_value >> 7 == 1);
+        self.set_status(StatusFlag::Zero, new_value == 0);
+        return new_value;
     }
 
     fn get_address(&mut self, mode: AddressMode, bus: &impl Bus<u16>) -> AddressResult {
@@ -422,6 +457,12 @@ impl Cpu {
         bus.write_byte(address, value_at_memory);
         self.set_status(StatusFlag::Negative, value_at_memory >> 7 == 1);
         self.set_status(StatusFlag::Zero, value_at_memory == 0);
+    }
+    
+    fn compare(&mut self, register_value: u8, value: u8) {
+        self.set_status(StatusFlag::Carry, register_value >= value);
+        self.set_status(StatusFlag::Zero, register_value == value);
+        self.set_status(StatusFlag::Negative, register_value.wrapping_sub(value) >> 7 == 1);
     }
 }
 
@@ -638,6 +679,7 @@ mod direct_instruction_tests {
 #[cfg(test)]
 mod operation_tests {
     use crate::cpu::{Cpu, StatusFlag, op_codes::{self as op}};
+    use test_case::test_case;
 
     #[test]
     fn asl_accumulator() {
@@ -734,6 +776,25 @@ mod operation_tests {
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 0b_0000_0000);
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
+    }
+
+    #[test_case(op::CMP_IMM, (100, 0, 0); "compare register a")]
+    #[test_case(op::CPX_IMM, (0, 100, 0); "compare register x")]
+    #[test_case(op::CPY_IMM, (0, 0, 100); "compare register y")]
+    fn compare_register(opcode: u8, register_values: (u8, u8, u8)) {
+        let mut memory = [opcode, 100, opcode, 99, opcode, 101]; // 0x0C
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        (cpu.register_a, cpu.register_x, cpu.register_y) = register_values;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.status, StatusFlag::Zero as u8 | StatusFlag::Carry as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
     }
 }
 

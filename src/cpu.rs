@@ -149,6 +149,15 @@ pub mod op_codes {
 
     pub const DEX: u8 = 0xCA;
     pub const DEY: u8 = 0x88;
+
+    pub const EOR_IMM: u8 = 0x49;
+    pub const EOR_ZER: u8 = 0x45;
+    pub const EOR_ZEX: u8 = 0x55;
+    pub const EOR_ABS: u8 = 0x4D;
+    pub const EOR_ABX: u8 = 0x5D;
+    pub const EOR_ABY: u8 = 0x59;
+    pub const EOR_INX: u8 = 0x41;
+    pub const EOR_INY: u8 = 0x51;
 }
 
 static INSTRUCTION_SET: [Option<Instruction>; 0xFF] = {
@@ -235,6 +244,17 @@ static INSTRUCTION_SET: [Option<Instruction>; 0xFF] = {
     
     add_instruction!(DEX, Implied, DEX, 2, false);
     add_instruction!(DEY, Implied, DEY, 2, false);
+
+
+    add_instruction!(EOR, Immediate, EOR_IMM, 2, false);
+    add_instruction!(EOR, ZeroPage,  EOR_ZER, 3, false);
+    add_instruction!(EOR, ZeroPageX, EOR_ZEX, 4, false);
+    add_instruction!(EOR, Absolute,  EOR_ABS, 4, false);
+    add_instruction!(EOR, AbsoluteX, EOR_ABX, 4, true);
+    add_instruction!(EOR, AbsoluteY, EOR_ABY, 4, true);
+    add_instruction!(EOR, IndirectX, EOR_INX, 6, false);
+    add_instruction!(EOR, IndirectY, EOR_INY, 5, true);
+
 
     table
 };
@@ -337,7 +357,13 @@ impl Cpu {
             }, 
             DEX => { self.register_x = self.decrement_value(self.register_x); }, 
             DEY => { self.register_y = self.decrement_value(self.register_y); }, 
-            EOR => { todo!(); }, 
+            EOR => { 
+                let value = bus.read_byte(address_result.address);
+                let result = self.register_a ^ value;
+                self.set_status(StatusFlag::Negative, result >> 7 == 1);
+                self.set_status(StatusFlag::Zero, result == 0);
+                self.register_a = result;
+            }, 
             INC => { 
                 let value = bus.read_byte(address_result.address);
                 bus.write_byte(address_result.address, self.increment_value(value)); 
@@ -872,6 +898,37 @@ mod operation_tests {
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
     }
+
+    #[test]
+    fn eor() {
+        let mut memory = [
+            op::EOR_IMM, 0b1100_1010,
+            op::EOR_ABX, 0x0B, 0x00,
+            op::EOR_ZER, 0x0C, 
+            op::EOR_IMM, 0b0111_1101, op::NOP, op::NOP, 
+            0b0101_1010,
+            0b1010_1111
+        ];
+        let mut cpu = Cpu::new();
+        cpu.register_a = 0b0100_0010;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0b1000_1000);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.register_a, 0b1101_0010);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.register_a, 0b0111_1101);
+        assert_eq!(cpu.status, 0);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0);
+        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+    }
+
 }
 
 #[cfg(test)]

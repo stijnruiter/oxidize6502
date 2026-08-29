@@ -65,6 +65,11 @@ pub mod op_codes {
     pub const CLI: u8 = 0x58;
     pub const CLV: u8 = 0xB8;
 
+    pub const INC_ZER: u8 = 0xE6;
+    pub const INC_ZEX: u8 = 0xF6;
+    pub const INC_ABS: u8 = 0xEE;
+    pub const INC_ABX: u8 = 0xFE;
+
     pub const INX: u8 = 0xE8;
     pub const INY: u8 = 0xC8;
 
@@ -106,6 +111,11 @@ static INSTRUCTION_SET: [Option<Instruction>; 0xFF] = {
     add_instruction!(CLD, Implied, CLD, 1, 2, false);
     add_instruction!(CLI, Implied, CLI, 1, 2, false);
     add_instruction!(CLV, Implied, CLV, 1, 2, false);
+
+    add_instruction!(INC, ZeroPage,  INC_ZER, 2, 5, false);
+    add_instruction!(INC, ZeroPageX, INC_ZEX, 2, 6, false);
+    add_instruction!(INC, Absolute,  INC_ABS, 3, 6, false);
+    add_instruction!(INC, AbsoluteY, INC_ABX, 3, 7, false);
 
     add_instruction!(INX, Implied, INX, 1, 2, false);
     add_instruction!(INY, Implied, INY, 1, 2, false);
@@ -173,7 +183,7 @@ impl Cpu {
         self.status & (StatusFlag::Break as u8) == (StatusFlag::Break as u8)
     }
 
-    pub fn next_op(&mut self, bus: &impl Bus<u16>) -> Result<u8, String> {
+    pub fn next_op(&mut self, bus: &mut impl Bus<u16>) -> Result<u8, String> {
         let next_instruction = bus.read_byte(self.program_counter);
         self.program_counter += 1;
 
@@ -189,7 +199,7 @@ impl Cpu {
         }
     }
 
-    fn execute_op(&mut self, instruction: InstructionCode, address: u16, bus: &impl Bus<u16>) {
+    fn execute_op(&mut self, instruction: InstructionCode, address: u16, bus: &mut impl Bus<u16>) {
         use InstructionCode::*;
         match instruction {
             ADC => { todo!(); }, 
@@ -216,7 +226,7 @@ impl Cpu {
             DEX => { todo!(); }, 
             DEY => { todo!(); }, 
             EOR => { todo!(); }, 
-            INC => { todo!(); }, 
+            INC => { self.increment_memory(address, bus); }, 
             INX => { self.increment_register_x(); }, 
             INY => { self.increment_register_y(); }, 
             JMP => { todo!(); },
@@ -308,6 +318,14 @@ impl Cpu {
         self.set_status(StatusFlag::Negative, self.register_y >> 7 == 1);
         self.set_status(StatusFlag::Zero, self.register_y == 0);
     }
+    
+    fn increment_memory(&mut self, address: u16, bus: &mut impl Bus<u16>) {
+        let mut value_at_memory = bus.read_byte(address);
+        value_at_memory = value_at_memory.wrapping_add(1);
+        bus.write_byte(address, value_at_memory);
+        self.set_status(StatusFlag::Negative, value_at_memory >> 7 == 1);
+        self.set_status(StatusFlag::Zero, value_at_memory == 0);
+    }
 }
 
 #[cfg(test)]
@@ -317,16 +335,15 @@ mod load_register_tests {
 
     macro_rules! test_load_immediate {
         ($op:ident, $register:ident) => {
-            #[allow(non_snake_case)]
-            mod $op {
+            mod $register {
                 use crate::cpu::{Cpu, StatusFlag};
                 use crate::cpu::op_codes::*;
 
                 #[test]
                 fn immediate() {
-                    let mem = [$op, 0x12];
+                    let mut memory = [$op, 0x12];
                     let mut cpu = Cpu::new();
-                    assert_eq!(cpu.next_op(&mem).unwrap(), 2);
+                    assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
                     assert_eq!(cpu.$register, 0x12);
                     assert_eq!(cpu.program_counter, 2);
                     assert_eq!(cpu.status, 0);
@@ -334,9 +351,9 @@ mod load_register_tests {
 
                 #[test]
                 fn immediate_negative_status() {
-                    let mem = [$op, 0x85];
+                    let mut memory = [$op, 0x85];
                     let mut cpu = Cpu::new();
-                    assert_eq!(cpu.next_op(&mem).unwrap(), 2);
+                    assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
                     assert_eq!(cpu.$register, 0x85);
                     assert_eq!(cpu.program_counter, 2);
                     assert_eq!(cpu.status, StatusFlag::Negative as u8);
@@ -344,9 +361,9 @@ mod load_register_tests {
 
                 #[test]
                 fn immediate_zero_status() {
-                    let mem = [$op, 0x00];
+                    let mut memory = [$op, 0x00];
                     let mut cpu = Cpu::new();
-                    assert_eq!(cpu.next_op(&mem).unwrap(), 2);
+                    assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
                     assert_eq!(cpu.$register, 0x00);
                     assert_eq!(cpu.program_counter, 2);
                     assert_eq!(cpu.status, StatusFlag::Zero as u8);
@@ -360,9 +377,9 @@ mod load_register_tests {
 
     #[test]
     fn lda_zero_page() {
-        let mem = [LDA_ZER, 0x05, NOP, NOP, BRK, 0x33];
+        let mut mem = [LDA_ZER, 0x05, NOP, NOP, BRK, 0x33];
         let mut cpu = Cpu::new();
-        assert_eq!(cpu.next_op(&mem).unwrap(), 3);
+        assert_eq!(cpu.next_op(&mut mem).unwrap(), 3);
         assert_eq!(cpu.register_a, 0x33);
         assert_eq!(cpu.program_counter, 2);
         assert_eq!(cpu.status, 0);
@@ -376,7 +393,7 @@ mod increment_instruction_tests {
     #[test]
     fn increment_register_x() {
         
-        let mem = [op::INX, op::INX, op::INX];
+        let mut memory = [op::INX, op::INX, op::INX];
         let mut cpu = Cpu::new();
         cpu.reset();
         cpu.register_a = 0xEE;
@@ -384,15 +401,15 @@ mod increment_instruction_tests {
         cpu.register_y = 0xDF;
 
 
-        assert_eq!(cpu.next_op(&mem).unwrap(), 2);        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);        
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xFF, 0xDF));
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
 
-        assert_eq!(cpu.next_op(&mem).unwrap(), 2);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0x00, 0xDF));
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
 
-        assert_eq!(cpu.next_op(&mem).unwrap(), 2);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0x01, 0xDF));
         assert_eq!(cpu.status, 0);
     }
@@ -401,7 +418,7 @@ mod increment_instruction_tests {
     #[test]
     fn increment_register_y() {
         
-        let mem = [op::INY, op::INY, op::INY];
+        let mut memory = [op::INY, op::INY, op::INY];
         let mut cpu = Cpu::new();
         cpu.reset();
         cpu.register_a = 0xEE;
@@ -409,18 +426,54 @@ mod increment_instruction_tests {
         cpu.register_y = 0xFE;
 
 
-        assert_eq!(cpu.next_op(&mem).unwrap(), 2);        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);        
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xAB, 0xFF));
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
 
-        assert_eq!(cpu.next_op(&mem).unwrap(), 2);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xAB, 0x00));
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
 
-        assert_eq!(cpu.next_op(&mem).unwrap(), 2);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xAB, 0x01));
         assert_eq!(cpu.status, 0);
     }
+
+    #[test]
+    fn increment_memory_zero_page() {
+        let mut memory = [op::INC_ZER, 0x02, 0xFE];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
+        assert_eq!(memory, [op::INC_ZER, 0x02, 0xFF]);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+
+        cpu.reset();
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
+        assert_eq!(memory, [op::INC_ZER, 0x02, 0x00]);
+        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+        
+        cpu.reset();
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
+        assert_eq!(memory, [op::INC_ZER, 0x02, 0x01]);
+        assert_eq!(cpu.status, 0);
+    }
+    #[test]
+    fn increment_memory_zero_page_x() {
+        let mut memory = [op::INC_ZEX, 0x02, op::NOP, op::NOP, 0xFE, op::NOP];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.register_x = 0x02;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 6);
+        assert_eq!(memory, [op::INC_ZEX, 0x02, op::NOP, op::NOP, 0xFF, op::NOP]);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+    }
+
 }
 
 #[cfg(test)]
@@ -430,13 +483,13 @@ mod direct_instruction_tests {
 
     #[test]
     fn break_set_status() {
-        let mem = [op::LDA_IMM, 0x00, op::BRK];
+        let mut mem = [op::LDA_IMM, 0x00, op::BRK];
         let mut cpu = Cpu::new();
 
-        cpu.next_op(&mem).unwrap();
+        cpu.next_op(&mut mem).unwrap();
         assert_eq!(cpu.has_breaked(), false);
         
-        cpu.next_op(&mem).unwrap();
+        cpu.next_op(&mut mem).unwrap();
         assert_eq!(cpu.has_breaked(), true);
     }
 
@@ -445,35 +498,35 @@ mod direct_instruction_tests {
     #[test_case(op::CLI, StatusFlag::Interrupt; "clear interrupt bit")] 
     #[test_case(op::CLV, StatusFlag::Overflow; "clear overflow bit")] 
     fn clear_codes(op_code: u8, status_bit: StatusFlag) {
-        let mem = [op_code];
+        let mut memory = [op_code];
         let mut cpu = Cpu::new();
         let status_flag = status_bit as u8;
 
         cpu.reset();
-        assert_eq!(cpu.next_op(&mem).unwrap(), 2);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, 0);
 
         cpu.reset();
         cpu.status = status_flag;
-        assert_eq!(cpu.next_op(&mem).unwrap(), 2);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, 0);
 
         cpu.reset();
         cpu.status = 0xFF;
-        assert_eq!(cpu.next_op(&mem).unwrap(), 2);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, !status_flag);
     }
 
     #[test]
     fn nop_code() {
         const N: usize = 6;
-        let mem: [u8; N] = [op::NOP, op::NOP, op::NOP, op::NOP, op::NOP, op::NOP ];
+        let mut mem: [u8; N] = [op::NOP, op::NOP, op::NOP, op::NOP, op::NOP, op::NOP ];
         let mut cpu = Cpu::new();
         let mut cycles = 0u8;
         cpu.reset();
         
         for _ in 0..N {
-            cycles += cpu.next_op(&mem).unwrap();
+            cycles += cpu.next_op(&mut mem).unwrap();
         }
  
         assert_eq!(cycles, 2 * N as u8, "cycles executed");

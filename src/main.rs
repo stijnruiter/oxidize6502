@@ -11,8 +11,8 @@ use crate::bus::Memory;
 fn main() {
     let mut cycles = 0;
 
-    let mut mem = Memory::new();
-    mem.load([
+    let mut memory = Memory::new();
+    memory.load([
         op::LDA_IMM, 0x55,
         op::LDA_IMM, 0x65,
         op::BRK
@@ -22,7 +22,7 @@ fn main() {
 
 
     while !cpu.has_breaked() {
-        cycles += cpu.next_op(&mem).unwrap();
+        cycles += cpu.next_op(&mut memory).unwrap();
         println!("Executing operation");
     }
     println!("Accumulator: 0x{:02X}", cpu.register_a);

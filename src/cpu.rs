@@ -57,6 +57,22 @@ impl Instruction {
     }
 }
 
+#[derive(Debug, PartialEq)]
+struct AddressResult
+{
+    address: u16,
+    page_crossed: bool
+}
+
+impl From<u16> for AddressResult {
+    fn from(value: u16) -> Self {
+        Self {
+            address: value,
+            page_crossed: false
+        }
+    }
+}
+
 pub mod op_codes {
     pub const BRK: u8 = 0x00;
     pub const NOP: u8 = 0xEA;
@@ -190,8 +206,13 @@ impl Cpu {
         match &INSTRUCTION_SET[next_instruction as usize] {
             Some(instr) => {
                 let address = self.get_address(instr.address_mode, bus);
-                self.execute_op(instr.instruction, address, bus);
-                return Ok(instr.cycles);
+                self.execute_op(instr.instruction, address.address, bus);
+                
+                if instr.can_cross_page && address.page_crossed {
+                    Ok (instr.cycles + 1)
+                } else {
+                    Ok (instr.cycles)
+                }
             },
             None => {
                 return Err(format!("Operation {:02X} not supported", next_instruction))
@@ -268,35 +289,59 @@ impl Cpu {
         return value;
     }
 
-    fn get_address(&mut self, mode: AddressMode, bus: &impl Bus<u16>) -> u16 {
+    fn get_address(&mut self, mode: AddressMode, bus: &impl Bus<u16>) -> AddressResult {
         match mode {
-            AddressMode::Implied => {
-                return 0
-            },
+            AddressMode::Implied => { 0u16.into() },
             AddressMode::Immediate => {
                 let address = self.program_counter;
                 self.program_counter += 1;
-                return address;
+                address.into()
             },
             AddressMode::ZeroPage => {
-                let address = bus.read_byte(self.program_counter);
+                let address = bus.read_byte(self.program_counter) as u16;
                 self.program_counter += 1;
-                return address as u16;
+                address.into()
             },
             AddressMode::ZeroPageX => {
                 let mut address = bus.read_byte(self.program_counter) as u16;
                 self.program_counter += 1;
                 address += self.register_x as u16;
-                return address & 0xFF; // Masked; 0x0080 + 0x00FF = 0x007F (and not 0x017F)
+                return (address & 0xFF).into(); // Masked; 0x0080 + 0x00FF = 0x007F (and not 0x017F)
             }, 
             AddressMode::ZeroPageY => {
                 let mut address = bus.read_byte(self.program_counter) as u16;
                 self.program_counter += 1;
                 address += self.register_y as u16;
-                return address & 0xFF; // Masked; 0x0080 + 0x00FF = 0x007F (and not 0x017F)
+                (address & 0xFF).into() // Masked; 0x0080 + 0x00FF = 0x007F (and not 0x017F)
+            },
+            AddressMode::Absolute => { self.read_word_little_endian(bus).into() },
+            AddressMode::AbsoluteX => {
+                let address = self.read_word_little_endian(bus);
+                let address_offset_x = address.wrapping_add(self.register_x as u16);
+                AddressResult {
+                    address: address_offset_x,
+                    page_crossed: address & 0xFF00 != address_offset_x & 0xFF00
+                }
+            },
+            AddressMode::AbsoluteY => {
+                let address = self.read_word_little_endian(bus);
+                let address_offset_y = address.wrapping_add(self.register_y as u16);
+                AddressResult {
+                    address: address_offset_y,
+                    page_crossed: address & 0xFF00 != address_offset_y & 0xFF00
+                }
             }
             _ => { todo!(); }
         }
+    }
+
+    fn read_word_little_endian(&mut self, bus: &impl Bus<u16>) -> u16 {
+        let low = bus.read_byte(self.program_counter) as u16;
+        self.program_counter += 1;
+        let high = bus.read_byte(self.program_counter) as u16;
+        self.program_counter += 1;
+        
+        high << 8 | low
     }
 
     fn set_status(&mut self, key: StatusFlag, value: bool) {
@@ -473,7 +518,6 @@ mod increment_instruction_tests {
         assert_eq!(memory, [op::INC_ZEX, 0x02, op::NOP, op::NOP, 0xFF, op::NOP]);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
     }
-
 }
 
 #[cfg(test)]
@@ -541,7 +585,7 @@ mod direct_instruction_tests {
 
 #[cfg(test)]
 mod address_modes_tests {
-    use crate::cpu::{Cpu, op_codes as op, AddressMode};
+    use crate::cpu::{Cpu, op_codes as op, AddressMode, AddressResult};
     use test_case::test_case;
 
     #[test_case(0; "immediate_1")]
@@ -550,13 +594,12 @@ mod address_modes_tests {
         let mem = [op::LDA_IMM, 0x05];
         let mut cpu = Cpu::new();
         cpu.program_counter = pc;
-        assert_eq!(cpu.get_address(AddressMode::Immediate, &mem), pc);
+        assert_eq!(cpu.get_address(AddressMode::Immediate, &mem), pc.into());
     }
-
     
-    #[test_case(0 => op::LDA_IMM as u16; "zero page 1")]
-    #[test_case(1 => 0x05; "zero page 2")]
-    fn test_zero_page(pc: u16) -> u16 {
+    #[test_case(0 => AddressResult::from(op::LDA_IMM as u16); "zero page 1")]
+    #[test_case(1 => AddressResult::from(0x05u16); "zero page 2")]
+    fn test_zero_page(pc: u16) -> AddressResult {
         let mem = [op::LDA_IMM, 0x05];
         let mut cpu = Cpu::new();
         cpu.program_counter = pc;
@@ -571,8 +614,8 @@ mod address_modes_tests {
         cpu.program_counter = 0;
         cpu.register_x = 0x15;
         cpu.register_y = 0x53;
-        assert_eq!(cpu.get_address(AddressMode::ZeroPageX, &mem), 0x004B, "add by x");
-        assert_eq!(cpu.get_address(AddressMode::ZeroPageX, &mem), 0x0005, "add by x overflow");
+        assert_eq!(cpu.get_address(AddressMode::ZeroPageX, &mem), 0x004B.into(), "add by x");
+        assert_eq!(cpu.get_address(AddressMode::ZeroPageX, &mem), 0x0005.into(), "add by x overflow");
     }
     
     #[test]
@@ -582,8 +625,56 @@ mod address_modes_tests {
         cpu.program_counter = 0;
         cpu.register_x = 0x15;
         cpu.register_y = 0x53;
-        assert_eq!(cpu.get_address(AddressMode::ZeroPageY, &mem), 0x0089, "add by y");
-        assert_eq!(cpu.get_address(AddressMode::ZeroPageY, &mem), 0x0043, "add by y overflow");
+        assert_eq!(cpu.get_address(AddressMode::ZeroPageY, &mem), 0x0089.into(), "add by y");
+        assert_eq!(cpu.get_address(AddressMode::ZeroPageY, &mem), 0x0043.into(), "add by y overflow");
+    }
+
+    
+    #[test]
+    fn test_absolute() {
+        let mem = [0x36, 0xF0, 0xEF, 0xAB];
+        let mut cpu = Cpu::new();
+        cpu.program_counter = 0;
+        cpu.register_x = 0x8E;
+        cpu.register_y = 0x8F;
+        assert_eq!(cpu.get_address(AddressMode::Absolute, &mem), 0xF036.into(), "absolute little endian 1");
+        assert_eq!(cpu.get_address(AddressMode::Absolute, &mem), 0xABEF.into(), "absolute little endian 2");
+    }
+
+    
+    #[test]
+    fn test_absolute_x() {
+        let mem = [0x36, 0xF0, 0xEF, 0xAB];
+        let mut cpu = Cpu::new();
+        cpu.program_counter = 0;
+        cpu.register_x = 0x8E;
+        cpu.register_y = 0x8F;
+        assert_eq!(cpu.get_address(AddressMode::AbsoluteX, &mem), AddressResult { address: 0xF0C4, page_crossed: false}, "absolute little endian 1");
+        assert_eq!(cpu.get_address(AddressMode::AbsoluteX, &mem), AddressResult { address: 0xAC7D, page_crossed: true}, "absolute little endian 2");
+    }
+
+    #[test]
+    fn test_absolute_y() {
+        let mem = [0x36, 0xF0, 0xEF, 0xAB];
+        let mut cpu = Cpu::new();
+        cpu.program_counter = 0;
+        cpu.register_x = 0x8E;
+        cpu.register_y = 0x8F;
+        assert_eq!(cpu.get_address(AddressMode::AbsoluteY, &mem), AddressResult { address: 0xF0C5, page_crossed: false}, "absolute little endian 1");
+        assert_eq!(cpu.get_address(AddressMode::AbsoluteY, &mem), AddressResult { address: 0xAC7E, page_crossed: true}, "absolute little endian 2");
+    }
+}
+
+#[cfg(test)]
+mod address_result_tests {
+    use crate::cpu::AddressResult;
+    
+    #[test]
+    fn into() {
+        let address: u16 = 0x12;
+        let result: AddressResult = address.into();
+        assert_eq!(result.address, address);
+        assert_eq!(result.page_crossed, false);
     }
 }
 

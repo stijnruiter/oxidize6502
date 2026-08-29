@@ -15,8 +15,10 @@ enum StatusFlag {
     Carry =     0x01,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum AddressMode {
+    Accumulator,
+
     Implied,
     Immediate,
 
@@ -108,6 +110,20 @@ pub mod op_codes {
     pub const LDA_INX: u8 = 0xA1;
     pub const LDA_INY: u8 = 0xB1;
 
+    pub const AND_IMM: u8 = 0x29;
+    pub const AND_ZER: u8 = 0x25;
+    pub const AND_ZEX: u8 = 0x35;
+    pub const AND_ABS: u8 = 0x2D;
+    pub const AND_ABX: u8 = 0x3D;
+    pub const AND_ABY: u8 = 0x39;
+    pub const AND_INX: u8 = 0x21;
+    pub const AND_INY: u8 = 0x31;
+
+    pub const ASL_ACC: u8 = 0x0A;
+    pub const ASL_ZER: u8 = 0x06;
+    pub const ASL_ZEX: u8 = 0x16;
+    pub const ASL_ABS: u8 = 0x0E;
+    pub const ASL_ABX: u8 = 0x1E;
 }
 
 static INSTRUCTION_SET: [Option<Instruction>; 0xFF] = {
@@ -154,6 +170,21 @@ static INSTRUCTION_SET: [Option<Instruction>; 0xFF] = {
     add_instruction!(LDA, AbsoluteY, LDA_ABY, 4,  true);
     add_instruction!(LDA, IndirectX, LDA_INX, 6, false);
     add_instruction!(LDA, IndirectY, LDA_INY, 5,  true);
+
+    add_instruction!(AND, Immediate, AND_IMM, 2, false);
+    add_instruction!(AND, ZeroPage,  AND_ZER, 3, false); 
+    add_instruction!(AND, ZeroPageX, AND_ZEX, 4, false);
+    add_instruction!(AND, Absolute,  AND_ABS, 4, false);
+    add_instruction!(AND, AbsoluteX, AND_ABX, 4, true); 
+    add_instruction!(AND, AbsoluteY, AND_ABY, 4, true);
+    add_instruction!(AND, IndirectX, AND_INX, 6, false); 
+    add_instruction!(AND, IndirectY, AND_INY, 5, true);
+
+    add_instruction!(ASL, Accumulator, ASL_ACC, 2, false);
+    add_instruction!(ASL, ZeroPage,    ASL_ZER, 5, false);
+    add_instruction!(ASL, ZeroPageX,   ASL_ZEX, 6, false);
+    add_instruction!(ASL, Absolute,    ASL_ABS, 6, false);
+    add_instruction!(ASL, AbsoluteX,   ASL_ABX, 7, false);
 
     table
 };
@@ -202,15 +233,8 @@ impl Cpu {
         self.program_counter += 1;
 
         match &INSTRUCTION_SET[next_instruction as usize] {
-            Some(instr) => {
-                let address = self.get_address(instr.address_mode, bus);
-                self.execute_op(instr.mnemonic, address.address, bus);
-                
-                if instr.can_cross_page && address.page_crossed {
-                    Ok (instr.cycles + 1)
-                } else {
-                    Ok (instr.cycles)
-                }
+            Some(instruction) => {
+                return Ok(self.execute_op(instruction, bus))
             },
             None => {
                 return Err(format!("Operation {:02X} not supported", next_instruction))
@@ -218,12 +242,35 @@ impl Cpu {
         }
     }
 
-    fn execute_op(&mut self, instruction: Mnemonic, address: u16, bus: &mut impl Bus<u16>) {
+    fn execute_op(&mut self, instruction: &Instruction, bus: &mut impl Bus<u16>) -> u8 {
         use Mnemonic::*;
-        match instruction {
+        
+        let address_result = self.get_address(instruction.address_mode, bus);
+        match instruction.mnemonic {
             ADC => { todo!(); }, 
-            AND => { todo!(); }, 
-            ASL => { todo!(); }, 
+            AND => { 
+                let value = bus.read_byte(address_result.address);
+                self.register_a &= value;
+                self.set_status(StatusFlag::Negative, self.register_a >> 7 == 1);
+                self.set_status(StatusFlag::Zero, self.register_a == 0);
+            }, 
+            ASL => {
+                let asl_impl = |cpu: &mut Self, value: u8| {
+                    let new_value = value << 1;
+                    cpu.set_status(StatusFlag::Carry, value >> 7 == 1);
+                    cpu.set_status(StatusFlag::Negative, new_value >> 7 == 1);
+                    cpu.set_status(StatusFlag::Zero, new_value == 0);
+                    return new_value;
+                };
+
+                if instruction.address_mode == AddressMode::Accumulator {
+                    self.register_a = asl_impl(self, self.register_a);
+                } else {
+                    let mut value = bus.read_byte(address_result.address);
+                    value = asl_impl(self, value);
+                    bus.write_byte(address_result.address, value);
+                }
+            }, 
             BCC => { todo!(); }, 
             BCS => { todo!(); }, 
             BEQ => { todo!(); }, 
@@ -245,14 +292,14 @@ impl Cpu {
             DEX => { todo!(); }, 
             DEY => { todo!(); }, 
             EOR => { todo!(); }, 
-            INC => { self.increment_memory(address, bus); }, 
+            INC => { self.increment_memory(address_result.address, bus); }, 
             INX => { self.increment_register_x(); }, 
             INY => { self.increment_register_y(); }, 
             JMP => { todo!(); },
             JSR => { todo!(); }, 
-            LDA => { self.register_a = self.load_value(address, bus); },
-            LDX => { self.register_x = self.load_value(address, bus); },
-            LDY => { self.register_y = self.load_value(address, bus); },
+            LDA => { self.register_a = self.load_value(address_result.address, bus); },
+            LDX => { self.register_x = self.load_value(address_result.address, bus); },
+            LDY => { self.register_y = self.load_value(address_result.address, bus); },
             LSR => { todo!(); }, 
             NOP => { /* do nothing */ }
             ORA => { todo!(); }, 
@@ -278,6 +325,12 @@ impl Cpu {
             TXS => { todo!(); }, 
             TYA => { todo!(); }
         }
+
+        if instruction.can_cross_page && address_result.page_crossed {
+            instruction.cycles + 1
+        } else {
+            instruction.cycles
+        }
     }
 
     fn load_value(&mut self, address: u16, bus: &impl Bus<u16>) -> u8 {
@@ -289,6 +342,7 @@ impl Cpu {
 
     fn get_address(&mut self, mode: AddressMode, bus: &impl Bus<u16>) -> AddressResult {
         match mode {
+            AddressMode::Accumulator => { 0u16.into() }
             AddressMode::Implied => { 0u16.into() },
             AddressMode::Immediate => {
                 let address = self.program_counter;
@@ -578,6 +632,108 @@ mod direct_instruction_tests {
         assert_eq!(cpu.register_y, 0, "current y register");
         assert_eq!(cpu.stack_pointer, 0, "current stack pointer");
         assert_eq!(cpu.status, 0, "current status");
+    }
+}
+
+#[cfg(test)]
+mod operation_tests {
+    use crate::cpu::{Cpu, StatusFlag, op_codes::{self as op}};
+
+    #[test]
+    fn asl_accumulator() {
+        let mut memory = [op::ASL_ACC, op::ASL_ACC, op::ASL_ACC, op::ASL_ACC, op::ASL_ACC, op::ASL_ACC];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.register_a = 0b1100_1000;
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0b1001_0000);
+        assert_eq!(cpu.program_counter, 1);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Negative as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0b0010_0000);
+        assert_eq!(cpu.program_counter, 2);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0b0100_0000);
+        assert_eq!(cpu.program_counter, 3);
+        assert_eq!(cpu.status, 0);    
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0b1000_0000);
+        assert_eq!(cpu.program_counter, 4);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);   
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0b0000_0000);
+        assert_eq!(cpu.program_counter, 5);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Zero as u8);
+    }
+    
+    #[test]
+    fn asl_zero_page() {
+        let mut memory = [
+            op::ASL_ZER, 0x0B, op::ASL_ZER, 0x0B, op::ASL_ZER, 0x0B, op::ASL_ZER, 0x0B, 
+            op::ASL_ZER, 0x0B, op::NOP, 0b1100_1000];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(memory[0x0B], 0b1001_0000);
+        assert_eq!(cpu.program_counter, 2);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Negative as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(memory[0x0B], 0b0010_0000);
+        assert_eq!(cpu.program_counter, 4);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(memory[0x0B], 0b0100_0000);
+        assert_eq!(cpu.program_counter, 6);
+        assert_eq!(cpu.status, 0);    
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(memory[0x0B], 0b1000_0000);
+        assert_eq!(cpu.program_counter, 8);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);   
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(memory[0x0B], 0b0000_0000);
+        assert_eq!(cpu.program_counter, 10);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Zero as u8);
+
+        assert_eq!(cpu.register_a, 0);
+    }
+
+    #[test]
+    fn logical_and() {
+        let mut memory = [
+            op::AND_IMM, 0b_1010_1010, op::AND_ZER, 0x0B, op::AND_ABS, 0x0C, 0x00, 
+            op::AND_IMM, 0b_1111_0000, op::NOP, op::NOP, 
+            0b_1001_0110, // 0x0B
+            0b_0000_1111,]; // 0x0C
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.register_a = 0xFF;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0b_1010_1010);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.register_a, 0b_1000_0010);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.register_a, 0b_0000_0010);
+        assert_eq!(cpu.status, 0);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0b_0000_0000);
+        assert_eq!(cpu.status, StatusFlag::Zero as u8);
     }
 }
 

@@ -388,8 +388,8 @@ impl Cpu {
             RTS => { todo!(); }, 
             SBC => { todo!(); }, 
             SEC => { self.set_status(StatusFlag::Carry, true); }, 
-            SED => { self.set_status(StatusFlag::Decimal, true); }, 
-            SEI => { unimplemented!("Decimal mode is not supported"); }, 
+            SED => { unimplemented!("Decimal mode is not supported"); }, 
+            SEI => { self.set_status(StatusFlag::Interrupt, true); }, 
             STA => { bus.write_byte(address_result.address, self.register_a); }, 
             STX => { bus.write_byte(address_result.address, self.register_x); }, 
             STY => { bus.write_byte(address_result.address, self.register_y); }, 
@@ -928,6 +928,39 @@ mod direct_instruction_tests {
         cpu.status = 0xFF;
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, !status_flag);
+    }
+
+    
+    #[test_case(op::SEC, StatusFlag::Carry; "set carry bit")]
+    #[test_case(op::SEI, StatusFlag::Interrupt; "set interrupt bit")] 
+    fn set_codes(op_code: u8, status_bit: StatusFlag) {
+        let mut memory = [op_code];
+        let mut cpu = Cpu::new();
+        let status_flag = status_bit as u8;
+
+        cpu.reset();
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.status, status_flag);
+
+        cpu.reset();
+        cpu.status = status_flag;
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.status, status_flag);
+
+        cpu.reset();
+        cpu.status = 0xFF;
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.status, 0xFF);
+    }
+
+    #[should_panic]
+    #[test]
+    fn set_decimal_should_panic() {
+        let mut memory = [op::SED];
+        let mut cpu = Cpu::new();
+
+        cpu.reset();
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
     }
 
     #[test]

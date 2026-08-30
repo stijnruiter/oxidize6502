@@ -135,6 +135,9 @@ instructions!{
     ASL_ABS: 0x0E => (ASL, Absolute,    6, false),
     ASL_ABX: 0x1E => (ASL, AbsoluteX,   7, false),
     
+    BIT_ZER: 0x24 => (BIT, ZeroPage,    3, false), 
+    BIT_ABS: 0x2C => (BIT, Absolute,    4, false),
+
     CMP_IMM: 0xC9 => (CMP, Immediate,   2, false),
     CMP_ZER: 0xC5 => (CMP, ZeroPage,    3, false),
     CMP_ZEX: 0xD5 => (CMP, ZeroPageX,   4, false),
@@ -199,6 +202,15 @@ instructions!{
     ROR_ABS: 0x6E => (ROR, Absolute,    6, false), 
     ROR_ABX: 0x7E => (ROR, AbsoluteX,   7, false),
 
+    SBC_IMM: 0xE9 => (SBC, Immediate,	2, false), 
+    SBC_ZER: 0xE5 => (SBC, ZeroPage,	3, false), 
+    SBC_ZEX: 0xF5 => (SBC, ZeroPageX,	4, false), 
+    SBC_ABS: 0xED => (SBC, Absolute,	4, false), 
+    SBC_ABX: 0xFD => (SBC, AbsoluteX,	4, true),
+    SBC_ABY: 0xF9 => (SBC, AbsoluteY,	4, true),
+    SBC_INX: 0xE1 => (SBC, IndirectX,	6, false),
+    SBC_INY: 0xF1 => (SBC, IndirectY,	5, true),
+    
     SEC    : 0x38 => (SEC, Implied,     2, false),
     SED    : 0xF8 => (SED, Implied,     2, false),
     SEI    : 0x78 => (SEI, Implied,     2, false),
@@ -306,7 +318,12 @@ impl Cpu {
             BCC => { todo!(); }, 
             BCS => { todo!(); }, 
             BEQ => { todo!(); }, 
-            BIT => { todo!(); }, 
+            BIT => { 
+                let value = self.register_a & bus.read_byte(address_result.address);
+                self.set_status(StatusFlag::Zero, value == 0);
+                self.set_status(StatusFlag::Overflow, (value >> 6) & 1 == 1);
+                self.set_status(StatusFlag::Negative, value >> 7 == 1);
+            }, 
             BMI => { todo!(); }, 
             BNE => { todo!(); }, 
             BPL => { todo!(); }, 
@@ -990,6 +1007,22 @@ mod operation_tests {
     use crate::cpu::{Cpu, StatusFlag, op_codes::{self as op}};
     use test_case::test_case;
 
+    #[test_case(0b0001_1010, StatusFlag::Zero as u8; "Bit test zero")]
+    #[test_case(0b0101_0101, StatusFlag::Overflow as u8; "Bit test overflow")]
+    #[test_case(0b1101_0101, StatusFlag::Overflow as u8 | StatusFlag::Negative as u8; "Bit test overflow and negative")]
+    #[test_case(0b1001_0101, StatusFlag::Negative as u8; "Bit test negative")]
+    #[test_case(0b0001_1111, 0; "Bit test nothing")]
+    fn bit_test(accumulator: u8, expected_flags: u8) {
+        let mut memory = [op::BIT_ZER, 0x02, 0b1110_0101];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+
+        (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (accumulator, 0x11, 0xCD, 0x1F);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3, "Operation cycles");
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (accumulator, 0x11, 0xCD, 0x1F), "Register values");
+        assert_eq!(cpu.status, expected_flags, "CPU Flags");
+    }
+
     #[test_case(0b1100_1000, 0b1001_0000, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "asl zero page carry negative")]
     #[test_case(0b1001_0000, 0b0010_0000, StatusFlag::Carry as u8; "asl zero page carry only")]
     #[test_case(0b0010_0000, 0b0100_0000, 0; "asl zer page regular")]
@@ -1285,7 +1318,6 @@ mod jump_tests {
         assert_eq!(cpu.program_counter, 0xEFAB);
     }
 }
-
 
 #[cfg(test)]
 mod address_modes_tests {

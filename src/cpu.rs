@@ -1375,6 +1375,30 @@ mod stack_tests {
     }
     
     #[test]
+    fn push_status_stack() {
+        let mut memory = [0u8; 0x0200];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        
+        assert_eq!(cpu.stack_pointer, 0xFD);
+        memory[0x00] = op::PHP;
+        memory[0x01] = op::PHP;
+
+        cpu.status = StatusFlag::Carry as u8 | StatusFlag::Overflow as u8;
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.stack_pointer, 0xFC);
+        assert_eq!(memory[0x01FD], StatusFlag::Carry as u8 | StatusFlag::Overflow as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8);
+
+        cpu.status = 0;
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.stack_pointer, 0xFB);
+        assert_eq!(memory[0x01FD], StatusFlag::Carry as u8 | StatusFlag::Overflow as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8);
+        assert_eq!(memory[0x01FC], StatusFlag::Break as u8 | StatusFlag::Unused as u8);
+        assert_eq!(cpu.status, 0);
+    }
+    
+    #[test]
     fn pull_accumulator_stack() {
         let mut memory = [0u8; 0x0200];
         let mut cpu = Cpu::new();
@@ -1405,6 +1429,37 @@ mod stack_tests {
         assert_eq!(cpu.register_a, 0b0101_0101);
         assert_eq!(cpu.stack_pointer, 0xFD);
         assert_eq!(cpu.status, 0);
+    }
+
+    
+    #[test]
+    fn pull_status_stack() {
+        let mut memory = [0u8; 0x0200];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.status = 0;
+        memory[0x0000] = op::PLP;
+        memory[0x0001] = op::PLP;
+        memory[0x0002] = op::PLP;
+
+        memory[0x01FB] = StatusFlag::Negative as u8 | StatusFlag::Break as u8;
+        memory[0x01FC] = StatusFlag::Break as u8;
+        memory[0x01FD] = StatusFlag::Carry as u8 | StatusFlag::Decimal as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8;
+
+        assert_eq!(cpu.stack_pointer, 0xFD);
+        cpu.stack_pointer = 0xFA;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.stack_pointer, 0xFB);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8 | StatusFlag::Unused as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.stack_pointer, 0xFC);
+        assert_eq!(cpu.status, StatusFlag::Unused as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.stack_pointer, 0xFD);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Decimal as u8 | StatusFlag::Unused as u8);
     }
 }
 

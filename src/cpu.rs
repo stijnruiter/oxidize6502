@@ -4,7 +4,6 @@ use crate::{Bus};
  */
 
 #[repr(u8)]
-#[allow(dead_code)]
 enum StatusFlag {
     Negative =  0x80,
     Overflow =  0x40,
@@ -200,6 +199,33 @@ instructions!{
     ROR_ABS: 0x6E => (ROR, Absolute,    6, false), 
     ROR_ABX: 0x7E => (ROR, AbsoluteX,   7, false),
 
+    SEC    : 0x38 => (SEC, Implied,     2, false),
+    SED    : 0xF8 => (SED, Implied,     2, false),
+    SEI    : 0x78 => (SEI, Implied,     2, false),
+
+    STA_ZER: 0x85 => (STA, ZeroPage,    3, false),
+    STA_ZEX: 0x95 => (STA, ZeroPageX,   4, false),
+    STA_ABS: 0x8D => (STA, Absolute,    4, false),
+    STA_ABX: 0x9D => (STA, AbsoluteX,   5, false),
+    STA_ABY: 0x99 => (STA, AbsoluteY,   5, false),
+    STA_INX: 0x81 => (STA, IndirectX,   6, false),
+    STA_INY: 0x91 => (STA, IndirectY,   6, false),
+
+    STX_ZER: 0x86 => (STX, ZeroPage,    3, false),
+    STX_ZEY: 0x96 => (STX, ZeroPageY,   4, false),
+    STX_ABS: 0x8E => (STX, Absolute,    4, false),
+
+    STY_ZER: 0x84 => (STY, ZeroPage,    3, false), 
+    STY_ZEX: 0x94 => (STY, ZeroPageX,   4, false), 
+    STY_ABS: 0x8C => (STY, Absolute,    4, false),
+
+    TAX    : 0xAA => (TAX, Implied,     2, false),
+    TAY    : 0xA8 => (TAY, Implied,     2, false),
+    TSX    : 0xBA => (TSX, Implied,     2, false),
+    TXA    : 0x8A => (TXA, Implied,     2, false),
+    TXS    : 0x9A => (TXS, Implied,     2, false),
+    TYA    : 0x98 => (TYA, Implied,     2, false),
+
 }
 
 pub struct Cpu {
@@ -361,18 +387,38 @@ impl Cpu {
             RTI => { todo!(); },
             RTS => { todo!(); }, 
             SBC => { todo!(); }, 
-            SEC => { todo!(); }, 
-            SED => { todo!(); }, 
-            SEI => { todo!(); }, 
-            STA => { todo!(); }, 
-            STX => { todo!(); }, 
-            STY => { todo!(); }, 
-            TAX => { todo!(); }, 
-            TAY => { todo!(); }, 
-            TSX => { todo!(); }, 
-            TXA => { todo!(); }, 
-            TXS => { todo!(); }, 
-            TYA => { todo!(); }
+            SEC => { self.set_status(StatusFlag::Carry, true); }, 
+            SED => { self.set_status(StatusFlag::Decimal, true); }, 
+            SEI => { unimplemented!("Decimal mode is not supported"); }, 
+            STA => { bus.write_byte(address_result.address, self.register_a); }, 
+            STX => { bus.write_byte(address_result.address, self.register_x); }, 
+            STY => { bus.write_byte(address_result.address, self.register_y); }, 
+            TAX => { 
+                self.register_x = self.register_a;
+                self.set_status(StatusFlag::Zero, self.register_x == 0);
+                self.set_status(StatusFlag::Negative, self.register_x >> 7 == 1);
+            }, 
+            TAY => { 
+                self.register_y = self.register_a;
+                self.set_status(StatusFlag::Zero, self.register_y == 0);
+                self.set_status(StatusFlag::Negative, self.register_y >> 7 == 1);
+            }, 
+            TSX => { 
+                self.register_x = self.stack_pointer;
+                self.set_status(StatusFlag::Zero, self.register_x == 0);
+                self.set_status(StatusFlag::Negative, self.register_x >> 7 == 1);
+            }, 
+            TXA => { 
+                self.register_a = self.register_x;
+                self.set_status(StatusFlag::Zero, self.register_a == 0);
+                self.set_status(StatusFlag::Negative, self.register_a >> 7 == 1);
+            }, 
+            TXS => { self.stack_pointer = self.register_x; }, 
+            TYA => { 
+                self.register_a = self.register_y;
+                self.set_status(StatusFlag::Zero, self.register_a == 0);
+                self.set_status(StatusFlag::Negative, self.register_a >> 7 == 1);
+            }
         }
 
         if instruction.can_cross_page && address_result.page_crossed {
@@ -535,59 +581,162 @@ impl Cpu {
 
 #[cfg(test)]
 mod load_register_tests {
-    use crate::cpu::Cpu;
+    use crate::cpu::{Cpu, StatusFlag};
     use crate::cpu::op_codes::*;
+    use test_case::test_case;
+        
+    #[test_case(LDA_IMM, 0x12, (0x12, 0xCD, 0xEF), 0; "load immediate accumulator")]
+    #[test_case(LDA_IMM, 0x85, (0x85, 0xCD, 0xEF), StatusFlag::Negative as u8; "load immediate accumulator negative")]
+    #[test_case(LDA_IMM, 0x00, (0x00, 0xCD, 0xEF), StatusFlag::Zero as u8; "load immediate accumulator zero")]
+    
+    #[test_case(LDX_IMM, 0x12, (0xAB, 0x12, 0xEF), 0; "load immediate register x")]
+    #[test_case(LDX_IMM, 0x85, (0xAB, 0x85, 0xEF), StatusFlag::Negative as u8; "load immediate register x negative")]
+    #[test_case(LDX_IMM, 0x00, (0xAB, 0x00, 0xEF), StatusFlag::Zero as u8; "load immediate register x zero")]
 
-    macro_rules! test_load_immediate {
-        ($op:ident, $register:ident) => {
-            mod $register {
-                use crate::cpu::{Cpu, StatusFlag};
-                use crate::cpu::op_codes::*;
+    #[test_case(LDY_IMM, 0x12, (0xAB, 0xCD, 0x12), 0; "load immediate register y")]
+    #[test_case(LDY_IMM, 0x85, (0xAB, 0xCD, 0x85), StatusFlag::Negative as u8; "load immediate register y negative")]
+    #[test_case(LDY_IMM, 0x00, (0xAB, 0xCD, 0x00), StatusFlag::Zero as u8; "load immediate register y zero")]
+    fn immediate(op_code: u8, value_immediate: u8, expected_register_values: (u8, u8, u8), expected_status: u8) {
+        let mut memory = [op_code, value_immediate];
+        let mut cpu = Cpu::new();
+        (cpu.register_a, cpu.register_x, cpu.register_y) = (0xAB, 0xCD, 0xEF);
 
-                #[test]
-                fn immediate() {
-                    let mut memory = [$op, 0x12];
-                    let mut cpu = Cpu::new();
-                    assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-                    assert_eq!(cpu.$register, 0x12);
-                    assert_eq!(cpu.program_counter, 2);
-                    assert_eq!(cpu.status, 0);
-                }
-
-                #[test]
-                fn immediate_negative_status() {
-                    let mut memory = [$op, 0x85];
-                    let mut cpu = Cpu::new();
-                    assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-                    assert_eq!(cpu.$register, 0x85);
-                    assert_eq!(cpu.program_counter, 2);
-                    assert_eq!(cpu.status, StatusFlag::Negative as u8);
-                }
-
-                #[test]
-                fn immediate_zero_status() {
-                    let mut memory = [$op, 0x00];
-                    let mut cpu = Cpu::new();
-                    assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-                    assert_eq!(cpu.$register, 0x00);
-                    assert_eq!(cpu.program_counter, 2);
-                    assert_eq!(cpu.status, StatusFlag::Zero as u8);
-                }
-            }
-        };
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), expected_register_values);
+        assert_eq!(cpu.program_counter, 2);
+        assert_eq!(cpu.status, expected_status);
     }
-    test_load_immediate!(LDA_IMM, register_a);
-    test_load_immediate!(LDX_IMM, register_x);
-    test_load_immediate!(LDY_IMM, register_y);
 
     #[test]
     fn lda_zero_page() {
         let mut mem = [LDA_ZER, 0x05, NOP, NOP, BRK, 0x33];
         let mut cpu = Cpu::new();
+        
         assert_eq!(cpu.next_op(&mut mem).unwrap(), 3);
         assert_eq!(cpu.register_a, 0x33);
         assert_eq!(cpu.program_counter, 2);
         assert_eq!(cpu.status, 0);
+    }
+}
+
+#[cfg(test)]
+mod store_register_tests {
+    use crate::cpu::{Cpu, op_codes as op};
+    use test_case::test_case;
+
+    #[test_case(op::STA_ZER, 0x11, 3; "store register accumulator zero page")]
+    #[test_case(op::STA_ABS, 0x11, 4; "store register accumulator absolute")]
+    #[test_case(op::STX_ZER, 0xC0, 3; "store register x zero page")]
+    #[test_case(op::STX_ABS, 0xC0, 4; "store register x absolute")]
+    #[test_case(op::STY_ZER, 0xDE, 3; "store register y zero page")]
+    #[test_case(op::STY_ABS, 0xDE, 4; "store register y absolute")]
+    fn zero_page(instruction: u8, expected_value: u8, expected_cycles: u8){
+        let register_values: (u8, u8, u8) = (0x11, 0xC0, 0xDE);
+        let mut memory = [instruction, 0x05, 0x00,op::NOP, op::NOP, 0xAB];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        (cpu.register_a, cpu.register_x, cpu.register_y) = register_values;
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), expected_cycles);
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), register_values);
+        assert_eq!(memory, [instruction, 0x05, 0x00,op::NOP, op::NOP, expected_value]);
+    }
+}
+
+#[cfg(test)]
+mod transfer_register_tests {
+    use crate::cpu::{Cpu, StatusFlag, op_codes::*};
+    use test_case::test_case;
+    
+    #[test_case(TAX, 0x5B, 0; "Transfer accumulator to X")]
+    #[test_case(TAX, 0xFE, StatusFlag::Negative as u8; "Transfer accumulator to X negative")]
+    #[test_case(TAX, 0x00, StatusFlag::Zero as u8; "Transfer accumulator to X zero")]
+    fn transfer_accumulator_to_x(op_code: u8, accumulator: u8, expected_status: u8) {
+        let mut memory = [op_code];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (accumulator, 0x11, 0xCD, 0x1F);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (accumulator, accumulator, 0xCD, 0x1F), "CPU registers");
+        assert_eq!(cpu.status, expected_status, "CPU status");
+    }
+    
+    #[test_case(TAY, 0x5B, 0; "Transfer accumulator to Y")]
+    #[test_case(TAY, 0xFE, StatusFlag::Negative as u8; "Transfer accumulator to Y negative")]
+    #[test_case(TAY, 0x00, StatusFlag::Zero as u8; "Transfer accumulator to Y zero")]
+    fn transfer_accumulator_to_y(op_code: u8, accumulator: u8, expected_status: u8) {
+        let mut memory = [op_code];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (accumulator, 0x11, 0xCD, 0x1F);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (accumulator, 0x11, accumulator, 0x1F), "CPU registers");
+        assert_eq!(cpu.status, expected_status, "CPU status");
+    }
+
+    
+    #[test_case(TXA, 0x5B, 0; "Transfer X to accumulator")]
+    #[test_case(TXA, 0xFE, StatusFlag::Negative as u8; "Transfer X to accumulator negative")]
+    #[test_case(TXA, 0x00, StatusFlag::Zero as u8; "Transfer X to accumulator zero")]
+    fn transfer_x_to_accumulator(op_code: u8, register_x: u8, expected_status: u8) {
+        let mut memory = [op_code];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (0xAB, register_x, 0xCD, 0x1F);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (register_x, register_x, 0xCD, 0x1F), "CPU registers");
+        assert_eq!(cpu.status, expected_status, "CPU status");
+    }
+
+    
+    #[test_case(TYA, 0x5B, 0; "Transfer Y to accumulator")]
+    #[test_case(TYA, 0xFE, StatusFlag::Negative as u8; "Transfer Y to accumulator negative")]
+    #[test_case(TYA, 0x00, StatusFlag::Zero as u8; "Transfer Y to accumulator zero")]
+    fn transfer_y_to_accumulator(op_code: u8, register_y: u8, expected_status: u8) {
+        let mut memory = [op_code];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (0xAB, 0xCD, register_y, 0x1F);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (register_y, 0xCD, register_y, 0x1F), "CPU registers");
+        assert_eq!(cpu.status, expected_status, "CPU status");
+    }
+
+    #[test]
+    fn transfer_x_to_stack() {
+        let mut memory = [TXS, TXS];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.status = 0x00;
+        (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (0xAB, 0xFF, 0xCD, 0x1F);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (0xAB, 0xFF, 0xCD, 0xFF));
+        assert_eq!(cpu.status, 0x00);
+
+        cpu.register_x = 0x00;
+        cpu.status = 0xFF;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (0xAB, 0x00, 0xCD, 0x00));
+        assert_eq!(cpu.status, 0xFF);
+    }
+
+    #[test_case(TSX, 0x5B, 0; "Transfer stack to X")]
+    #[test_case(TSX, 0xFE, StatusFlag::Negative as u8; "Transfer stack to X negative")]
+    #[test_case(TSX, 0x00, StatusFlag::Zero as u8; "Transfer stack to X zero")]
+    fn transfer_stack_to_x(op_code: u8, stack_pointer: u8, expected_status: u8) {
+        let mut memory = [op_code];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (0xAB, 0x11, 0xCD, stack_pointer);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (0xAB, stack_pointer, 0xCD, stack_pointer), "CPU registers");
+        assert_eq!(cpu.status, expected_status, "CPU status");
     }
 }
 

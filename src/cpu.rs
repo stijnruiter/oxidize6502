@@ -178,6 +178,28 @@ instructions!{
     LSR_ZEX: 0x56 => (LSR, ZeroPageX,   6, false), 
     LSR_ABS: 0x4E => (LSR, Absolute,    6, false), 
     LSR_ABX: 0x5E => (LSR, AbsoluteX,   7, false),
+
+    ORA_IMM: 0x09 => (ORA, Immediate,   2, false),
+    ORA_ZER: 0x05 => (ORA, ZeroPage,    3, false),
+    ORA_ZEX: 0x15 => (ORA, ZeroPageX,   4, false),
+    ORA_ABS: 0x0D => (ORA, Absolute,    4, false),
+    ORA_ABX: 0x1D => (ORA, AbsoluteX,   4, true), 
+    ORA_ABY: 0x19 => (ORA, AbsoluteY,   4, true), 
+    ORA_INX: 0x01 => (ORA, IndirectX,   6, false),
+    ORA_INY: 0x11 => (ORA, IndirectY,   5, true), 
+
+    ROL_ACC: 0x2A => (ROL, Accumulator, 2, false), 
+    ROL_ZER: 0x26 => (ROL, ZeroPage,    5, false), 
+    ROL_ZEX: 0x36 => (ROL, ZeroPageX,   6, false), 
+    ROL_ABS: 0x2E => (ROL, Absolute,    6, false), 
+    ROL_ABX: 0x3E => (ROL, AbsoluteX,   7, false),
+
+    ROR_ACC: 0x6A => (ROR, Accumulator, 2, false), 
+    ROR_ZER: 0x66 => (ROR, ZeroPage,    5, false), 
+    ROR_ZEX: 0x76 => (ROR, ZeroPageX,   6, false), 
+    ROR_ABS: 0x6E => (ROR, Absolute,    6, false), 
+    ROR_ABX: 0x7E => (ROR, AbsoluteX,   7, false),
+
 }
 
 pub struct Cpu {
@@ -307,13 +329,35 @@ impl Cpu {
                 } 
             }, 
             NOP => { /* do nothing */ }
-            ORA => { todo!(); }, 
+            ORA => { 
+                let value = bus.read_byte(address_result.address);
+                self.register_a |= value;
+                self.set_status(StatusFlag::Zero, self.register_a == 0);
+                self.set_status(StatusFlag::Negative, self.register_a >> 7 == 1);
+             }, 
             PHA => { todo!(); }, 
             PHP => { todo!(); }, 
             PLA => { todo!(); }, 
             PLP => { todo!(); }, 
-            ROL => { todo!(); }, 
-            ROR => { todo!(); }, 
+            ROL => {
+                if instruction.address_mode == AddressMode::Accumulator {
+                    self.register_a = self.rol_value(self.register_a);
+                } 
+                else {
+                    let mut value = bus.read_byte(address_result.address);
+                    value = self.rol_value(value);
+                    bus.write_byte(address_result.address, value);
+                } 
+            }, 
+            ROR => { 
+                if instruction.address_mode == AddressMode::Accumulator {
+                    self.register_a = self.ror_value(self.register_a);
+                } 
+                else {
+                    let mut value = bus.read_byte(address_result.address);
+                    value = self.ror_value(value);
+                    bus.write_byte(address_result.address, value);
+                }  }, 
             RTI => { todo!(); },
             RTS => { todo!(); }, 
             SBC => { todo!(); }, 
@@ -359,6 +403,30 @@ impl Cpu {
         self.set_status(StatusFlag::Negative, false);
         self.set_status(StatusFlag::Zero, new_value == 0);
         return new_value;
+    }
+
+    fn rol_value(&mut self, value: u8) -> u8 {
+        let mut new_value = value << 1;
+        if self.is_set(StatusFlag::Carry) {
+            new_value |= 1;
+        }
+
+        self.set_status(StatusFlag::Carry, value >> 7 == 1);
+        self.set_status(StatusFlag::Negative, new_value >> 7 == 1);
+        self.set_status(StatusFlag::Zero, new_value == 0);
+        new_value
+    }
+
+    fn ror_value(&mut self, value: u8) -> u8 {
+        let mut new_value = value >> 1;
+        if self.is_set(StatusFlag::Carry) {
+            new_value |= 1 << 7;
+        }
+
+        self.set_status(StatusFlag::Carry, value & 1 == 1);
+        self.set_status(StatusFlag::Negative, new_value >> 7 == 1);
+        self.set_status(StatusFlag::Zero, new_value == 0);
+        new_value
     }
 
     fn get_address(&mut self, mode: AddressMode, bus: &impl Bus<u16>) -> AddressResult {
@@ -437,6 +505,11 @@ impl Cpu {
         } else {
             self.status &= !(key as u8)
         }
+    }
+
+    fn is_set(&self, key: StatusFlag) -> bool {
+        let status_bit = key as u8;
+        self.status & status_bit == status_bit
     }
     
     fn increment_value(&mut self, value: u8) -> u8 {
@@ -802,16 +875,109 @@ mod operation_tests {
         assert_eq!(memory[0x02], expected_after, "Memory value");
         assert_eq!(cpu.program_counter, 2, "Program counter");
         assert_eq!(cpu.status, expected_status, "CPU status");
-        assert_eq!(cpu.register_a, 0, "Accumulator");
+        assert_eq!(cpu.register_a, 0, "");
+    }
+
+    // ORA, ROL, ROR
+    #[test_case(0b1001_0110, 0b0000_0000, 0b1001_0110, StatusFlag::Negative as u8; "unchanged with zero")]
+    #[test_case(0b0000_0000, 0b1001_0110, 0b1001_0110, StatusFlag::Negative as u8; "zero accumulator")]
+    #[test_case(0b0110_1001, 0b0001_0110, 0b0111_1111, 0; "regular without status flags")]
+    #[test_case(0, 0, 0, StatusFlag::Zero as u8; "zero")]
+    fn ora(accumulator_before: u8, value_before: u8, expected_result: u8, expected_status: u8) {
+        let mut memory = [op::ORA_IMM, value_before];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.set_status(StatusFlag::Negative, true);
+        cpu.register_a = accumulator_before;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.register_a, expected_result, "Accumulator");
+        assert_eq!(cpu.status, expected_status, "CPU status flags");
     }
     
+    #[test_case(0b0000_0000, false, 0b0000_0000, StatusFlag::Zero as u8; "unchanged")]
+    #[test_case(0b0000_0000, true, 0b0000_0001, 0; "carry transferred to value")]
+    #[test_case(0b1010_1010, true, 0b0101_0101, StatusFlag::Carry as u8; "carry correctly set")]
+    #[test_case(0b0000_1010, false, 0b0001_0100, 0; "flags cleared")]
+    #[test_case(0b0100_1010, false, 0b1001_0100, StatusFlag::Negative as u8; "negative is set")]
+    fn rol_accumulator(accumulator_before: u8, carry_bit: bool, expected_value: u8, expected_status: u8) {
+        let mut memory = [op::ROL_ACC];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.set_status(StatusFlag::Negative, true);
+        cpu.set_status(StatusFlag::Carry, carry_bit);
+        cpu.register_a = accumulator_before;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.register_a, expected_value, "Accumulator");
+        assert_eq!(cpu.status, expected_status, "CPU status flags");
+    }
+    
+    #[test_case(0b0000_0000, false, 0b0000_0000, StatusFlag::Zero as u8; "unchanged")]
+    #[test_case(0b0000_0000, true, 0b0000_0001, 0; "carry transferred to value")]
+    #[test_case(0b1010_1010, true, 0b0101_0101, StatusFlag::Carry as u8; "carry correctly set")]
+    #[test_case(0b0000_1010, false, 0b0001_0100, 0; "flags cleared")]
+    #[test_case(0b0100_1010, false, 0b1001_0100, StatusFlag::Negative as u8; "negative is set")]
+    fn rol_memory(value_before: u8, carry_bit: bool, expected_value: u8, expected_status: u8) {
+        let mut memory = [op::ROL_ZER, 0x02, value_before];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.set_status(StatusFlag::Negative, true);
+        cpu.set_status(StatusFlag::Carry, carry_bit);
+        cpu.register_a = 0xAB;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5, "Operation cycles");
+        assert_eq!(memory[2], expected_value, "Memory value");
+        assert_eq!(cpu.status, expected_status, "CPU status flags");
+        assert_eq!(cpu.register_a, 0xAB);
+    }
+
+    #[test_case(0b0000_0000, false, 0b0000_0000, StatusFlag::Zero as u8; "unchanged")]
+    #[test_case(0b0000_0000, true, 0b1000_0000, StatusFlag::Negative as u8; "carry transferred to value")]
+    #[test_case(0b1010_1010, true, 0b1101_0101, StatusFlag::Negative as u8; "negative correctly set, carry applied")]
+    #[test_case(0b0000_1010, false, 0b0000_0101, 0; "flags cleared")]
+    #[test_case(0b0100_1011, true, 0b1010_0101, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "carry and negative are set")]
+    #[test_case(0b0100_1011, false, 0b0010_0101, StatusFlag::Carry as u8; "carry is set")]
+    fn ror_accumulator(accumulator_before: u8, carry_bit: bool, expected_value: u8, expected_status: u8) {
+        let mut memory = [op::ROR_ACC];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.set_status(StatusFlag::Negative, true);
+        cpu.set_status(StatusFlag::Carry, carry_bit);
+        cpu.register_a = accumulator_before;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.register_a, expected_value, "Accumulator");
+        assert_eq!(cpu.status, expected_status, "CPU status flags");
+    }
+
+    #[test_case(0b0000_0000, false, 0b0000_0000, StatusFlag::Zero as u8; "unchanged")]
+    #[test_case(0b0000_0000, true, 0b1000_0000, StatusFlag::Negative as u8; "carry transferred to value")]
+    #[test_case(0b1010_1010, true, 0b1101_0101, StatusFlag::Negative as u8; "negative correctly set, carry applied")]
+    #[test_case(0b0000_1010, false, 0b0000_0101, 0; "flags cleared")]
+    #[test_case(0b0100_1011, true, 0b1010_0101, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "carry and negative are set")]
+    #[test_case(0b0100_1011, false, 0b0010_0101, StatusFlag::Carry as u8; "carry is set")]
+    fn ror_memory(memory_before: u8, carry_bit: bool, expected_value: u8, expected_status: u8) {
+        let mut memory = [op::ROR_ZER, 0x02, memory_before];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.set_status(StatusFlag::Negative, true);
+        cpu.set_status(StatusFlag::Carry, carry_bit);
+        cpu.register_a = 0xAB;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5, "Operation cycles");
+        assert_eq!(memory[2], expected_value, "Memory value");
+        assert_eq!(cpu.status, expected_status, "CPU status flags");
+        assert_eq!(cpu.register_a, 0xAB, "Accumulator");
+    }
+
     #[test]
     fn logical_and() {
         let mut memory = [
             op::AND_IMM, 0b_1010_1010, op::AND_ZER, 0x0B, op::AND_ABS, 0x0C, 0x00, 
             op::AND_IMM, 0b_1111_0000, op::NOP, op::NOP, 
             0b_1001_0110, // 0x0B
-            0b_0000_1111,]; // 0x0C
+            0b_0000_1111]; // 0x0C
         let mut cpu = Cpu::new();
         cpu.reset();
         cpu.register_a = 0xFF;

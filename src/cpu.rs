@@ -172,6 +172,12 @@ instructions!{
     
     JMP_ABS: 0x4C => (JMP, Absolute,    3, false),
     JMP_IND: 0x6C => (JMP, Indirect,    5, false),
+
+    LSR_ACC: 0x4A => (LSR, Accumulator, 2, false), 
+    LSR_ZER: 0x46 => (LSR, ZeroPage,    5, false), 
+    LSR_ZEX: 0x56 => (LSR, ZeroPageX,   6, false), 
+    LSR_ABS: 0x4E => (LSR, Absolute,    6, false), 
+    LSR_ABX: 0x5E => (LSR, AbsoluteX,   7, false),
 }
 
 pub struct Cpu {
@@ -290,7 +296,16 @@ impl Cpu {
             LDA => { self.register_a = self.load_value(address_result.address, bus); },
             LDX => { self.register_x = self.load_value(address_result.address, bus); },
             LDY => { self.register_y = self.load_value(address_result.address, bus); },
-            LSR => { todo!(); }, 
+            LSR => { 
+                if instruction.address_mode == AddressMode::Accumulator {
+                    self.register_a = self.lsr_value(self.register_a);
+                } 
+                else {
+                    let mut value = bus.read_byte(address_result.address);
+                    value = self.lsr_value(value);
+                    bus.write_byte(address_result.address, value);
+                } 
+            }, 
             NOP => { /* do nothing */ }
             ORA => { todo!(); }, 
             PHA => { todo!(); }, 
@@ -334,6 +349,14 @@ impl Cpu {
         let new_value = value << 1;
         self.set_status(StatusFlag::Carry, value >> 7 == 1);
         self.set_status(StatusFlag::Negative, new_value >> 7 == 1);
+        self.set_status(StatusFlag::Zero, new_value == 0);
+        return new_value;
+    }
+    
+    fn lsr_value(&mut self, value: u8) -> u8 {
+        let new_value = value >> 1;
+        self.set_status(StatusFlag::Carry, value & 1 == 1);
+        self.set_status(StatusFlag::Negative, false);
         self.set_status(StatusFlag::Zero, new_value == 0);
         return new_value;
     }
@@ -712,75 +735,76 @@ mod operation_tests {
     use crate::cpu::{Cpu, StatusFlag, op_codes::{self as op}};
     use test_case::test_case;
 
-    #[test]
-    fn asl_accumulator() {
-        let mut memory = [op::ASL_ACC, op::ASL_ACC, op::ASL_ACC, op::ASL_ACC, op::ASL_ACC, op::ASL_ACC];
+    #[test_case(0b1100_1000, 0b1001_0000, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "asl zero page carry negative")]
+    #[test_case(0b1001_0000, 0b0010_0000, StatusFlag::Carry as u8; "asl zero page carry only")]
+    #[test_case(0b0010_0000, 0b0100_0000, 0; "asl zer page regular")]
+    #[test_case(0b0100_0000, 0b1000_0000, StatusFlag::Negative as u8; "asl zero page negative only")]
+    #[test_case(0b1000_0000, 0b0000_0000, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "asl zero page carry zero")]
+    #[test_case(0b0000_0000, 0b0000_0000, StatusFlag::Zero as u8; "asl zero page zero only")]
+    fn asl_accumulator(accumulator_before: u8, expected_after: u8, expected_status: u8) {
+        let mut memory = [op::ASL_ACC];
         let mut cpu = Cpu::new();
         cpu.reset();
-        cpu.register_a = 0b1100_1000;
+        cpu.register_a = accumulator_before;
         
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0b1001_0000);
-        assert_eq!(cpu.program_counter, 1);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Negative as u8);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0b0010_0000);
-        assert_eq!(cpu.program_counter, 2);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0b0100_0000);
-        assert_eq!(cpu.program_counter, 3);
-        assert_eq!(cpu.status, 0);    
-        
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0b1000_0000);
-        assert_eq!(cpu.program_counter, 4);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);   
-        
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0b0000_0000);
-        assert_eq!(cpu.program_counter, 5);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Zero as u8);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.register_a, expected_after, "Accumulator");
+        assert_eq!(cpu.program_counter, 1, "Program counter");
+        assert_eq!(cpu.status, expected_status, "CPU status");
     }
     
-    #[test]
-    fn asl_zero_page() {
-        let mut memory = [
-            op::ASL_ZER, 0x0B, op::ASL_ZER, 0x0B, op::ASL_ZER, 0x0B, op::ASL_ZER, 0x0B, 
-            op::ASL_ZER, 0x0B, op::NOP, 0b1100_1000];
+    #[test_case(0b1100_1000, 0b1001_0000, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "asl zero page carry negative")]
+    #[test_case(0b1001_0000, 0b0010_0000, StatusFlag::Carry as u8; "asl zero page carry only")]
+    #[test_case(0b0010_0000, 0b0100_0000, 0; "asl zer page regular")]
+    #[test_case(0b0100_0000, 0b1000_0000, StatusFlag::Negative as u8; "asl zero page negative only")]
+    #[test_case(0b1000_0000, 0b0000_0000, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "asl zero page carry zero")]
+    #[test_case(0b0000_0000, 0b0000_0000, StatusFlag::Zero as u8; "asl zero page zero only")]
+    fn asl_zero_page(before: u8, expected_after: u8, expected_status: u8) {
+        let mut memory = [op::ASL_ZER, 0x02, before];
         let mut cpu = Cpu::new();
         cpu.reset();
         
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
-        assert_eq!(memory[0x0B], 0b1001_0000);
-        assert_eq!(cpu.program_counter, 2);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Negative as u8);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
-        assert_eq!(memory[0x0B], 0b0010_0000);
-        assert_eq!(cpu.program_counter, 4);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
-        assert_eq!(memory[0x0B], 0b0100_0000);
-        assert_eq!(cpu.program_counter, 6);
-        assert_eq!(cpu.status, 0);    
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5, "Operation cycles");
+        assert_eq!(memory[0x02], expected_after, "Memory value");
+        assert_eq!(cpu.program_counter, 2, "Program counter");
+        assert_eq!(cpu.status, expected_status, "CPU status");
+        assert_eq!(cpu.register_a, 0, "Accumulator");
+    }
+    
+    #[test_case(0b1100_1000, 0b0110_0100, 0u8; "Regular bit shift")]
+    #[test_case(0b1100_1001, 0b0110_0100, StatusFlag::Carry as u8; "Carry bit shift")]
+    #[test_case(0b0000_0001, 0b0000_0000, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "Carry and zero")]
+    #[test_case(0b0000_0000, 0b0000_0000, StatusFlag::Zero as u8; "Zero")]
+    fn lsr_accumulator(before: u8, expected_after: u8, expected_status: u8) {
+        let mut memory = [op::LSR_ACC];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.set_status(StatusFlag::Negative, true);
+        cpu.register_a = before;
         
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
-        assert_eq!(memory[0x0B], 0b1000_0000);
-        assert_eq!(cpu.program_counter, 8);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);   
-        
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
-        assert_eq!(memory[0x0B], 0b0000_0000);
-        assert_eq!(cpu.program_counter, 10);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Zero as u8);
-
-        assert_eq!(cpu.register_a, 0);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.register_a, expected_after, "Accumulator");
+        assert_eq!(cpu.program_counter, 1, "Program counter");
+        assert_eq!(cpu.status, expected_status, "CPU status flags");
     }
 
+    #[test_case(0b1100_1000, 0b0110_0100, 0u8; "Regular bit shift")]
+    #[test_case(0b1100_1001, 0b0110_0100, StatusFlag::Carry as u8; "Carry bit shift")]
+    #[test_case(0b0000_0001, 0b0000_0000, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "Carry and zero")]
+    #[test_case(0b0000_0000, 0b0000_0000,StatusFlag::Zero as u8; "Zero")]
+    fn lsr_zero_page(before: u8, expected_after: u8, expected_status: u8) {
+        let mut memory = [op::LSR_ZER, 0x02, before];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.set_status(StatusFlag::Negative, true);
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5, "Operation cycles");
+        assert_eq!(memory[0x02], expected_after, "Memory value");
+        assert_eq!(cpu.program_counter, 2, "Program counter");
+        assert_eq!(cpu.status, expected_status, "CPU status");
+        assert_eq!(cpu.register_a, 0, "Accumulator");
+    }
+    
     #[test]
     fn logical_and() {
         let mut memory = [

@@ -24,8 +24,7 @@ enum AddressMode {
 
     ZeroPage, ZeroPageX, ZeroPageY,
     Absolute, AbsoluteX, AbsoluteY,
-
-    IndirectX, IndirectY
+    Indirect, IndirectX, IndirectY
 }
 
 #[derive(Clone, Copy)]
@@ -158,6 +157,9 @@ pub mod op_codes {
     pub const EOR_ABY: u8 = 0x59;
     pub const EOR_INX: u8 = 0x41;
     pub const EOR_INY: u8 = 0x51;
+
+    pub const JMP_ABS: u8 = 0x4C;
+    pub const JMP_IND: u8 = 0x6C;
 }
 
 static INSTRUCTION_SET: [Option<Instruction>; 0xFF] = {
@@ -255,6 +257,8 @@ static INSTRUCTION_SET: [Option<Instruction>; 0xFF] = {
     add_instruction!(EOR, IndirectX, EOR_INX, 6, false);
     add_instruction!(EOR, IndirectY, EOR_INY, 5, true);
 
+    add_instruction!(JMP, Absolute, JMP_ABS, 3, false);
+    add_instruction!(JMP, Indirect, JMP_IND, 5, false);
 
     table
 };
@@ -370,7 +374,7 @@ impl Cpu {
             }, 
             INX => { self.register_x = self.increment_value(self.register_x); }, 
             INY => { self.register_y = self.increment_value(self.register_y); }, 
-            JMP => { todo!(); },
+            JMP => { self.program_counter = address_result.address },
             JSR => { todo!(); }, 
             LDA => { self.register_a = self.load_value(address_result.address, bus); },
             LDX => { self.register_x = self.load_value(address_result.address, bus); },
@@ -449,9 +453,9 @@ impl Cpu {
                 address += self.register_y as u16;
                 (address & 0xFF).into() // Masked; 0x0080 + 0x00FF = 0x007F (and not 0x017F)
             },
-            AddressMode::Absolute => { self.read_word_little_endian(bus).into() },
+            AddressMode::Absolute => { self.fetch_word_at_pc(bus).into() },
             AddressMode::AbsoluteX => {
-                let address = self.read_word_little_endian(bus);
+                let address = self.fetch_word_at_pc(bus);
                 let address_offset_x = address.wrapping_add(self.register_x as u16);
                 AddressResult {
                     address: address_offset_x,
@@ -459,23 +463,37 @@ impl Cpu {
                 }
             },
             AddressMode::AbsoluteY => {
-                let address = self.read_word_little_endian(bus);
+                let address = self.fetch_word_at_pc(bus);
                 let address_offset_y = address.wrapping_add(self.register_y as u16);
                 AddressResult {
                     address: address_offset_y,
                     page_crossed: address & 0xFF00 != address_offset_y & 0xFF00
                 }
+            },
+            AddressMode::Indirect => {
+                let low = bus.read_byte(self.program_counter) as u16;
+                // emulate bug in original 6502, where lsb 0xXXFF causes the msb to wrap around page, reading 0xXX00 instead of next page
+                let msb_address = if self.program_counter & 0x00FF == 0x00FF { self.program_counter & 0xFF00} else { self.program_counter + 1};
+                let high =  bus.read_byte(msb_address) as u16;
+                let address = high << 8 | low;
+
+                self.program_counter += 2;
+
+                crate::Cpu::read_word_little_endian(bus, address).into()
             }
             _ => { todo!(); }
         }
     }
 
-    fn read_word_little_endian(&mut self, bus: &impl Bus<u16>) -> u16 {
-        let low = bus.read_byte(self.program_counter) as u16;
-        self.program_counter += 1;
-        let high = bus.read_byte(self.program_counter) as u16;
-        self.program_counter += 1;
-        
+    fn fetch_word_at_pc(&mut self, bus: &impl Bus<u16>) -> u16 {
+        let address = crate::Cpu::read_word_little_endian(bus, self.program_counter);
+        self.program_counter += 2;
+        address
+    }
+
+    fn read_word_little_endian(bus: &impl Bus<u16>, address: u16) -> u16 {
+        let low = bus.read_byte(address) as u16;
+        let high = bus.read_byte(address + 1) as u16;
         high << 8 | low
     }
 
@@ -932,6 +950,61 @@ mod operation_tests {
 }
 
 #[cfg(test)]
+mod jump_tests {
+    use crate::cpu::{Cpu, op_codes as op};
+
+    #[test]
+    pub fn jump_indirect() {
+        let mut memory = [
+            op::JMP_IND, 0x05, 0x00,
+            op::NOP, op::NOP,
+            0xAB, 0xCD,
+            op::NOP, op::NOP,
+            op::NOP, op::NOP];
+        let mut cpu = Cpu::new();
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(cpu.register_a, 0);
+        assert_eq!(cpu.program_counter, 0xCDAB);
+        assert_eq!(cpu.status, 0);
+    }
+
+    #[test]
+    pub fn jump_absolute() {
+        let mut memory = [
+            op::JMP_ABS, 0x05, 0x00,
+            op::NOP, op::NOP,
+            0xAB, 0xCD,
+            op::NOP, op::NOP,
+            op::NOP, op::NOP];
+        let mut cpu = Cpu::new();
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.register_a, 0);
+        assert_eq!(cpu.program_counter, 0x0005);
+        assert_eq!(cpu.status, 0);
+    }
+    
+    #[test]
+    pub fn jump_indirect_absolute() {
+        let mut memory = [
+            op::JMP_ABS, 0x05, 0x00,
+            op::NOP, op::NOP,
+            op::JMP_IND, 0x0C, 0x00,
+            op::NOP, op::NOP,
+            op::NOP, op::NOP,
+            0xAB, 0xEF];
+        let mut cpu = Cpu::new();
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.program_counter, 0x0005);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(cpu.program_counter, 0xEFAB);
+    }
+}
+
+
+#[cfg(test)]
 mod address_modes_tests {
     use crate::cpu::{Cpu, op_codes as op, AddressMode, AddressResult};
     use test_case::test_case;
@@ -998,7 +1071,9 @@ mod address_modes_tests {
         cpu.register_x = 0x8E;
         cpu.register_y = 0x8F;
         assert_eq!(cpu.get_address(AddressMode::AbsoluteX, &mem), AddressResult { address: 0xF0C4, page_crossed: false}, "absolute little endian 1");
+        assert_eq!(cpu.program_counter, 2);
         assert_eq!(cpu.get_address(AddressMode::AbsoluteX, &mem), AddressResult { address: 0xAC7D, page_crossed: true}, "absolute little endian 2");
+        assert_eq!(cpu.program_counter, 4);
     }
 
     #[test]
@@ -1009,7 +1084,36 @@ mod address_modes_tests {
         cpu.register_x = 0x8E;
         cpu.register_y = 0x8F;
         assert_eq!(cpu.get_address(AddressMode::AbsoluteY, &mem), AddressResult { address: 0xF0C5, page_crossed: false}, "absolute little endian 1");
+        assert_eq!(cpu.program_counter, 2);
         assert_eq!(cpu.get_address(AddressMode::AbsoluteY, &mem), AddressResult { address: 0xAC7E, page_crossed: true}, "absolute little endian 2");
+        assert_eq!(cpu.program_counter, 4);
+    }
+
+    #[test]
+    fn test_indirect() {
+        let mem = [0x08, 0x00, op::NOP, op::NOP, op::NOP, op::NOP, op::NOP, op::NOP, 0xAB, 0xCD];
+        let mut cpu = Cpu::new();
+        assert_eq!(cpu.get_address(AddressMode::Indirect, &mem), AddressResult { address: 0xCDAB, page_crossed: false});
+        assert_eq!(cpu.program_counter, 2);
+    }
+
+    
+    #[test]
+    fn test_indirect_page_wrap_around() {
+        let mut mem = [0; 0x0200];
+        mem[0x0000] = 0x01;
+        mem[0x00FF] = 0x05;
+        mem[0x0100] = 0xAB;
+        mem[0x0105] = 0xAA;
+        mem[0x0106] = 0xBB;
+        let mut cpu = Cpu::new();
+        cpu.program_counter = 0x00FF;
+
+        // With the page wrapping bug of indirect, the indirect address should be 0x0105, and not 0xAB05 (this would panic)
+        // At 0x0105, we will get 0xBBAA
+
+        assert_eq!(cpu.get_address(AddressMode::Indirect, &mem), 0xBBAA.into());
+        assert_eq!(cpu.program_counter, 0x0101);
     }
 }
 

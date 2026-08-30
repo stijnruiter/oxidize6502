@@ -36,24 +36,12 @@ enum Mnemonic {
     RTS, SBC, SEC, SED, SEI, STA, STX, STY, TAX, TAY, TSX, TXA, TXS, TYA
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 struct Instruction {
     address_mode: AddressMode,
     mnemonic: Mnemonic,
     cycles: u8,
     can_cross_page: bool
-}
-
-impl Instruction {
-    pub const fn new(mode: AddressMode, mnemenic: Mnemonic, cycles: u8, cross_page: bool) -> Self {
-        Self {
-            address_mode: mode,
-            mnemonic: mnemenic,
-            cycles: cycles,
-            can_cross_page: cross_page
-        }
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -72,196 +60,119 @@ impl From<u16> for AddressResult {
     }
 }
 
-pub mod op_codes {
-    pub const BRK: u8 = 0x00;
-    pub const NOP: u8 = 0xEA;
-    pub const CLC: u8 = 0x18;
-    pub const CLD: u8 = 0xD8;
-    pub const CLI: u8 = 0x58;
-    pub const CLV: u8 = 0xB8;
+macro_rules! instructions {
+    ($( $name:ident : $code:expr => ($mnemenic:ident, $addr:ident, $cycles:expr, $cross:expr) ),* $(,)?) => {
+        pub mod op_codes {
+            $(
+                pub const $name: u8 = $code;
+            )*
+        }
 
-    pub const INC_ZER: u8 = 0xE6;
-    pub const INC_ZEX: u8 = 0xF6;
-    pub const INC_ABS: u8 = 0xEE;
-    pub const INC_ABX: u8 = 0xFE;
-
-    pub const INX: u8 = 0xE8;
-    pub const INY: u8 = 0xC8;
-
-    pub const LDX_IMM: u8 = 0xA2;
-    pub const LDX_ZER: u8 = 0xA6;
-    pub const LDX_ZEY: u8 = 0xB6;
-    pub const LDX_ABS: u8 = 0xAE;
-    pub const LDX_ABY: u8 = 0xBE;
-
-    pub const LDY_IMM: u8 = 0xA0;
-    pub const LDY_ZER: u8 = 0xA4;
-    pub const LDY_ZEX: u8 = 0xB4;
-    pub const LDY_ABS: u8 = 0xAC;
-    pub const LDY_ABX: u8 = 0xBC;
-
-    pub const LDA_IMM: u8 = 0xA9;
-    pub const LDA_ZER: u8 = 0xA5;
-    pub const LDA_ZEX: u8 = 0xB5;
-    pub const LDA_ABS: u8 = 0xAD;
-    pub const LDA_ABX: u8 = 0xBD;
-    pub const LDA_ABY: u8 = 0xB9;
-    pub const LDA_INX: u8 = 0xA1;
-    pub const LDA_INY: u8 = 0xB1;
-
-    pub const AND_IMM: u8 = 0x29;
-    pub const AND_ZER: u8 = 0x25;
-    pub const AND_ZEX: u8 = 0x35;
-    pub const AND_ABS: u8 = 0x2D;
-    pub const AND_ABX: u8 = 0x3D;
-    pub const AND_ABY: u8 = 0x39;
-    pub const AND_INX: u8 = 0x21;
-    pub const AND_INY: u8 = 0x31;
-
-    pub const ASL_ACC: u8 = 0x0A;
-    pub const ASL_ZER: u8 = 0x06;
-    pub const ASL_ZEX: u8 = 0x16;
-    pub const ASL_ABS: u8 = 0x0E;
-    pub const ASL_ABX: u8 = 0x1E;
-    
-    pub const CMP_IMM: u8 = 0xC9;
-    pub const CMP_ZER: u8 = 0xC5;
-    pub const CMP_ZEX: u8 = 0xD5;
-    pub const CMP_ABS: u8 = 0xCD;
-    pub const CMP_ABX: u8 = 0xDD;
-    pub const CMP_ABY: u8 = 0xD9;
-    pub const CMP_INX: u8 = 0xC1;
-    pub const CMP_INY: u8 = 0xD1;
-
-    pub const CPX_IMM: u8 = 0xE0;
-    pub const CPX_ZER: u8 = 0xE4;
-    pub const CPX_ABS: u8 = 0xEC;
-
-    pub const CPY_IMM: u8 = 0xC0;
-    pub const CPY_ZER: u8 = 0xC4;
-    pub const CPY_ABS: u8 = 0xCC;
-
-    pub const DEC_ZER: u8 = 0xC6;
-    pub const DEC_ZEX: u8 = 0xD6;
-    pub const DEC_ABS: u8 = 0xCE;
-    pub const DEC_ABX: u8 = 0xDE;
-
-    pub const DEX: u8 = 0xCA;
-    pub const DEY: u8 = 0x88;
-
-    pub const EOR_IMM: u8 = 0x49;
-    pub const EOR_ZER: u8 = 0x45;
-    pub const EOR_ZEX: u8 = 0x55;
-    pub const EOR_ABS: u8 = 0x4D;
-    pub const EOR_ABX: u8 = 0x5D;
-    pub const EOR_ABY: u8 = 0x59;
-    pub const EOR_INX: u8 = 0x41;
-    pub const EOR_INY: u8 = 0x51;
-
-    pub const JMP_ABS: u8 = 0x4C;
-    pub const JMP_IND: u8 = 0x6C;
+        static INSTRUCTION_SET: [Option<Instruction>; 0x100] = {
+            let mut table: [Option<Instruction>; 0x100] = [None; 0x100];
+            $(
+                table[op_codes::$name as usize] =
+                    Some(Instruction {
+                        address_mode: AddressMode::$addr,
+                        mnemonic: Mnemonic::$mnemenic,
+                        cycles: $cycles,
+                        can_cross_page: $cross
+                    });
+            )*
+            table
+        };
+    };
 }
 
-static INSTRUCTION_SET: [Option<Instruction>; 0xFF] = {
-    let mut table: [Option<Instruction>; 0xFF] = [None; 0xFF];
+instructions!{
+    BRK:     0x00 => (BRK, Implied,     7, false),
+    NOP:     0xEA => (NOP, Implied,     2, false),
+    CLC:     0x18 => (CLC, Implied,     2, false),
+    CLD:     0xD8 => (CLD, Implied,     2, false),
+    CLI:     0x58 => (CLI, Implied,     2, false),
+    CLV:     0xB8 => (CLV, Implied,     2, false),
 
-    macro_rules! add_instruction {
-        ($code:ident, $addr:ident, $op:ident, $cycles:expr, $cross:expr) => {
-            table[op_codes::$op as usize] = Some(Instruction::new(AddressMode::$addr, Mnemonic::$code, $cycles, $cross));
-        };
-    }
+    INC_ZER: 0xE6 => (INC, ZeroPage,    5, false),
+    INC_ZEX: 0xF6 => (INC, ZeroPageX,   6, false),
+    INC_ABS: 0xEE => (INC, Absolute,    6, false),
+    INC_ABX: 0xFE => (INC, AbsoluteY,   7, false),
 
-    add_instruction!(BRK, Implied, BRK, 7, false);
-    add_instruction!(NOP, Implied, NOP, 2, false);
-    add_instruction!(CLC, Implied, CLC, 2, false);
-    add_instruction!(CLD, Implied, CLD, 2, false);
-    add_instruction!(CLI, Implied, CLI, 2, false);
-    add_instruction!(CLV, Implied, CLV, 2, false);
+    INX:     0xE8 => (INX, Implied,     2, false),
+    INY:     0xC8 => (INY, Implied,     2, false),
 
-    add_instruction!(INC, ZeroPage,  INC_ZER, 5, false);
-    add_instruction!(INC, ZeroPageX, INC_ZEX, 6, false);
-    add_instruction!(INC, Absolute,  INC_ABS, 6, false);
-    add_instruction!(INC, AbsoluteY, INC_ABX, 7, false);
-
-    add_instruction!(INX, Implied, INX, 2, false);
-    add_instruction!(INY, Implied, INY, 2, false);
-
-    add_instruction!(LDX, Immediate, LDX_IMM, 2, false);
-    add_instruction!(LDX, ZeroPage,  LDX_ZER, 3, false);
-    add_instruction!(LDX, ZeroPageY, LDX_ZEY, 4, false);
-    add_instruction!(LDX, Absolute,  LDX_ABS, 4, false);
-    add_instruction!(LDX, AbsoluteY, LDX_ABY, 4, true);
-
-    add_instruction!(LDY, Immediate, LDY_IMM, 2, false);
-    add_instruction!(LDY, ZeroPage,  LDY_ZER, 3, false);
-    add_instruction!(LDY, ZeroPageX, LDY_ZEX, 4, false);
-    add_instruction!(LDY, Absolute,  LDY_ABS, 4, false);
-    add_instruction!(LDY, AbsoluteX, LDY_ABX, 4, true);
-
-    add_instruction!(LDA, Immediate, LDA_IMM, 2, false);
-    add_instruction!(LDA, ZeroPage,  LDA_ZER, 3, false);
-    add_instruction!(LDA, ZeroPageX, LDA_ZEX, 4, false);
-    add_instruction!(LDA, Absolute,  LDA_ABS, 4, false);
-    add_instruction!(LDA, AbsoluteX, LDA_ABX, 4,  true);
-    add_instruction!(LDA, AbsoluteY, LDA_ABY, 4,  true);
-    add_instruction!(LDA, IndirectX, LDA_INX, 6, false);
-    add_instruction!(LDA, IndirectY, LDA_INY, 5,  true);
-
-    add_instruction!(AND, Immediate, AND_IMM, 2, false);
-    add_instruction!(AND, ZeroPage,  AND_ZER, 3, false); 
-    add_instruction!(AND, ZeroPageX, AND_ZEX, 4, false);
-    add_instruction!(AND, Absolute,  AND_ABS, 4, false);
-    add_instruction!(AND, AbsoluteX, AND_ABX, 4, true); 
-    add_instruction!(AND, AbsoluteY, AND_ABY, 4, true);
-    add_instruction!(AND, IndirectX, AND_INX, 6, false); 
-    add_instruction!(AND, IndirectY, AND_INY, 5, true);
-
-    add_instruction!(ASL, Accumulator, ASL_ACC, 2, false);
-    add_instruction!(ASL, ZeroPage,    ASL_ZER, 5, false);
-    add_instruction!(ASL, ZeroPageX,   ASL_ZEX, 6, false);
-    add_instruction!(ASL, Absolute,    ASL_ABS, 6, false);
-    add_instruction!(ASL, AbsoluteX,   ASL_ABX, 7, false);
-
-    add_instruction!(CMP, Immediate, CMP_IMM, 2, false); 
-    add_instruction!(CMP, ZeroPage,  CMP_ZER, 3, false); 
-    add_instruction!(CMP, ZeroPageX, CMP_ZEX, 4, false); 
-    add_instruction!(CMP, Absolute,  CMP_ABS, 4, false); 
-    add_instruction!(CMP, AbsoluteX, CMP_ABX, 4, true);
-    add_instruction!(CMP, AbsoluteY, CMP_ABY, 4, true);
-    add_instruction!(CMP, IndirectX, CMP_INX, 6, false);
-    add_instruction!(CMP, IndirectY, CMP_INY, 5, true);
-
-    add_instruction!(CPX, Immediate, CPX_IMM, 2, false); 
-    add_instruction!(CPX, ZeroPage,  CPX_ZER, 3, false); 
-    add_instruction!(CPX, Absolute,  CPX_ABS, 4, false);
-
-    add_instruction!(CPY, Immediate, CPY_IMM, 2, false); 
-    add_instruction!(CPY, ZeroPage,	 CPY_ZER, 3, false); 
-    add_instruction!(CPY, Absolute,	 CPY_ABS, 4, false);
-
-    add_instruction!(DEC, ZeroPage,  DEC_ZER, 5, false); 
-    add_instruction!(DEC, ZeroPageX, DEC_ZEX, 6, false); 
-    add_instruction!(DEC, Absolute,  DEC_ABS, 6, false); 
-    add_instruction!(DEC, AbsoluteX, DEC_ABX, 7, false);
+    LDX_IMM: 0xA2 => (LDX, Immediate,   2, false),
+    LDX_ZER: 0xA6 => (LDX, ZeroPage,    3, false),
+    LDX_ZEY: 0xB6 => (LDX, ZeroPageY,   4, false),
+    LDX_ABS: 0xAE => (LDX, Absolute,    4, false),
+    LDX_ABY: 0xBE => (LDX, AbsoluteY,   4, true),
     
-    add_instruction!(DEX, Implied, DEX, 2, false);
-    add_instruction!(DEY, Implied, DEY, 2, false);
-
-
-    add_instruction!(EOR, Immediate, EOR_IMM, 2, false);
-    add_instruction!(EOR, ZeroPage,  EOR_ZER, 3, false);
-    add_instruction!(EOR, ZeroPageX, EOR_ZEX, 4, false);
-    add_instruction!(EOR, Absolute,  EOR_ABS, 4, false);
-    add_instruction!(EOR, AbsoluteX, EOR_ABX, 4, true);
-    add_instruction!(EOR, AbsoluteY, EOR_ABY, 4, true);
-    add_instruction!(EOR, IndirectX, EOR_INX, 6, false);
-    add_instruction!(EOR, IndirectY, EOR_INY, 5, true);
-
-    add_instruction!(JMP, Absolute, JMP_ABS, 3, false);
-    add_instruction!(JMP, Indirect, JMP_IND, 5, false);
-
-    table
-};
+    LDY_IMM: 0xA0 => (LDY, Immediate,   2, false),
+    LDY_ZER: 0xA4 => (LDY, ZeroPage,    3, false),
+    LDY_ZEX: 0xB4 => (LDY, ZeroPageX,   4, false),
+    LDY_ABS: 0xAC => (LDY, Absolute,    4, false),
+    LDY_ABX: 0xBC => (LDY, AbsoluteX,   4, true),
+    
+    LDA_IMM: 0xA9 => (LDA, Immediate,   2, false),
+    LDA_ZER: 0xA5 => (LDA, ZeroPage,    3, false),
+    LDA_ZEX: 0xB5 => (LDA, ZeroPageX,   4, false),
+    LDA_ABS: 0xAD => (LDA, Absolute,    4, false),
+    LDA_ABX: 0xBD => (LDA, AbsoluteX,   4, true),
+    LDA_ABY: 0xB9 => (LDA, AbsoluteY,   4, true),
+    LDA_INX: 0xA1 => (LDA, IndirectX,   6, false),
+    LDA_INY: 0xB1 => (LDA, IndirectY,   5, true),
+    
+    AND_IMM: 0x29 => (AND, Immediate,   2, false),
+    AND_ZER: 0x25 => (AND, ZeroPage,    3, false),
+    AND_ZEX: 0x35 => (AND, ZeroPageX,   4, false),
+    AND_ABS: 0x2D => (AND, Absolute,    4, false),
+    AND_ABX: 0x3D => (AND, AbsoluteX,   4, true),
+    AND_ABY: 0x39 => (AND, AbsoluteY,   4, true),
+    AND_INX: 0x21 => (AND, IndirectX,   6, false),
+    AND_INY: 0x31 => (AND, IndirectY,   5, true),
+    
+    ASL_ACC: 0x0A => (ASL, Accumulator, 2, false),
+    ASL_ZER: 0x06 => (ASL, ZeroPage,    5, false),
+    ASL_ZEX: 0x16 => (ASL, ZeroPageX,   6, false),
+    ASL_ABS: 0x0E => (ASL, Absolute,    6, false),
+    ASL_ABX: 0x1E => (ASL, AbsoluteX,   7, false),
+    
+    CMP_IMM: 0xC9 => (CMP, Immediate,   2, false),
+    CMP_ZER: 0xC5 => (CMP, ZeroPage,    3, false),
+    CMP_ZEX: 0xD5 => (CMP, ZeroPageX,   4, false),
+    CMP_ABS: 0xCD => (CMP, Absolute,    4, false),
+    CMP_ABX: 0xDD => (CMP, AbsoluteX,   4, true),
+    CMP_ABY: 0xD9 => (CMP, AbsoluteY,   4, true),
+    CMP_INX: 0xC1 => (CMP, IndirectX,   6, false),
+    CMP_INY: 0xD1 => (CMP, IndirectY,   5, true),
+    
+    CPX_IMM: 0xE0 => (CPX, Immediate,   2, false),
+    CPX_ZER: 0xE4 => (CPX, ZeroPage,    3, false),
+    CPX_ABS: 0xEC => (CPX, Absolute,    4, false),
+    
+    CPY_IMM: 0xC0 => (CPY, Immediate,   2, false),
+    CPY_ZER: 0xC4 => (CPY, ZeroPage,    3, false),
+    CPY_ABS: 0xCC => (CPY, Absolute,    4, false),
+    
+    DEC_ZER: 0xC6 => (DEC, ZeroPage,    5, false),
+    DEC_ZEX: 0xD6 => (DEC, ZeroPageX,   6, false),
+    DEC_ABS: 0xCE => (DEC, Absolute,    6, false),
+    DEC_ABX: 0xDE => (DEC, AbsoluteX,   7, false),
+    
+    DEX:     0xCA => (DEX, Implied,     2, false),  
+    DEY:     0x88 => (DEY, Implied,     2, false), 
+    
+    EOR_IMM: 0x49 => (EOR, Immediate,   2, false),
+    EOR_ZER: 0x45 => (EOR, ZeroPage,    3, false),
+    EOR_ZEX: 0x55 => (EOR, ZeroPageX,   4, false),
+    EOR_ABS: 0x4D => (EOR, Absolute,    4, false),
+    EOR_ABX: 0x5D => (EOR, AbsoluteX,   4, true),
+    EOR_ABY: 0x59 => (EOR, AbsoluteY,   4, true),
+    EOR_INX: 0x41 => (EOR, IndirectX,   6, false),
+    EOR_INY: 0x51 => (EOR, IndirectY,   5, true),
+    
+    JMP_ABS: 0x4C => (JMP, Absolute,    3, false),
+    JMP_IND: 0x6C => (JMP, Indirect,    5, false),
+}
 
 pub struct Cpu {
     pub register_a: u8,

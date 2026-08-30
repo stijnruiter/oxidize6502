@@ -7,6 +7,7 @@ use crate::{Bus};
 enum StatusFlag {
     Negative =  0x80,
     Overflow =  0x40,
+    Unused =    0x20, 
     Break =     0x10,
     Decimal =   0x08,
     Interrupt = 0x04,
@@ -190,6 +191,11 @@ instructions!{
     ORA_INX: 0x01 => (ORA, IndirectX,   6, false),
     ORA_INY: 0x11 => (ORA, IndirectY,   5, true), 
 
+    PHA    : 0x48 => (PHA, Implied,     3, false),
+    PHP    : 0x08 => (PHP, Implied,     3, false),
+    PLA    : 0x68 => (PLA, Implied,     4, false),
+    PLP    : 0x28 => (PLP, Implied,     4, false),
+
     ROL_ACC: 0x2A => (ROL, Accumulator, 2, false), 
     ROL_ZER: 0x26 => (ROL, ZeroPage,    5, false), 
     ROL_ZEX: 0x36 => (ROL, ZeroPageX,   6, false), 
@@ -271,7 +277,7 @@ impl Cpu {
         self.register_y =  0; 
         
         self.program_counter = 0; 
-        self.stack_pointer = 0; 
+        self.stack_pointer = 0xFD; 
         self.status = 0;
     }
 
@@ -378,10 +384,20 @@ impl Cpu {
                 self.set_status(StatusFlag::Zero, self.register_a == 0);
                 self.set_status(StatusFlag::Negative, self.register_a >> 7 == 1);
              }, 
-            PHA => { todo!(); }, 
-            PHP => { todo!(); }, 
-            PLA => { todo!(); }, 
-            PLP => { todo!(); }, 
+            PHA => { self.push_stack(bus, self.register_a); }, 
+            PHP => { 
+                let status = self.status | StatusFlag::Unused as u8 | StatusFlag::Break as u8;
+                self.push_stack(bus, status); }, 
+            PLA => { 
+                self.register_a = self.pull_stack(bus);
+                self.set_status(StatusFlag::Zero, self.register_a == 0);
+                self.set_status(StatusFlag::Negative, self.register_a >> 7 == 1);
+            }, 
+            PLP => { 
+                let status = self.pull_stack(bus);
+                // Discard Break, set unused high
+                self.status = status & !(StatusFlag::Break as u8) | StatusFlag::Unused as u8;
+            }, 
             ROL => {
                 if instruction.address_mode == AddressMode::Accumulator {
                     self.register_a = self.rol_value(self.register_a);
@@ -560,6 +576,19 @@ impl Cpu {
         let low = bus.read_byte(address) as u16;
         let high = bus.read_byte(address + 1) as u16;
         high << 8 | low
+    }
+
+    fn push_stack(&mut self, bus: &mut impl Bus<u16>, value: u8) {
+        let stack_address = 0x0100u16 + self.stack_pointer as u16;
+        bus.write_byte(stack_address, value);
+        self.stack_pointer = self.stack_pointer.wrapping_sub(1);
+    }
+
+    
+    fn pull_stack(&mut self, bus: &mut impl Bus<u16>) -> u8 {
+        self.stack_pointer = self.stack_pointer.wrapping_add(1);
+        let stack_address = 0x0100u16 + self.stack_pointer as u16;
+        bus.read_byte(stack_address)
     }
 
     fn set_status(&mut self, key: StatusFlag, value: bool) {
@@ -987,18 +1016,14 @@ mod direct_instruction_tests {
         let mut cpu = Cpu::new();
         let mut cycles = 0u8;
         cpu.reset();
-        
+
+        let previous_state = (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer, cpu.status);
         for _ in 0..N {
             cycles += cpu.next_op(&mut mem).unwrap();
         }
- 
         assert_eq!(cycles, 2 * N as u8, "cycles executed");
         assert_eq!(cpu.program_counter, N as u16, "current program counter");
-        assert_eq!(cpu.register_a, 0, "current a register");
-        assert_eq!(cpu.register_x, 0, "current x register");
-        assert_eq!(cpu.register_y, 0, "current y register");
-        assert_eq!(cpu.stack_pointer, 0, "current stack pointer");
-        assert_eq!(cpu.status, 0, "current status");
+        assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer, cpu.status), previous_state);
     }
 }
 
@@ -1316,6 +1341,70 @@ mod jump_tests {
         assert_eq!(cpu.program_counter, 0x0005);
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
         assert_eq!(cpu.program_counter, 0xEFAB);
+    }
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use crate::cpu::{Cpu, StatusFlag, op_codes as op};
+
+    #[test]
+    fn push_accumulator_stack() {
+        let mut memory = [0u8; 0x0200];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        
+        assert_eq!(cpu.stack_pointer, 0xFD);
+        memory[0x00] = op::PHA;
+        memory[0x01] = op::PHA;
+
+        cpu.register_a = 0xAB;
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.stack_pointer, 0xFC);
+        assert_eq!(memory[0x01FD], 0xAB);
+        assert_eq!(cpu.register_a, 0xAB);
+        assert_eq!(cpu.status, 0);
+
+        cpu.register_a = 0xCD;
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.stack_pointer, 0xFB);
+        assert_eq!(memory[0x01FC], 0xCD);
+        assert_eq!(memory[0x01FD], 0xAB);
+        assert_eq!(cpu.register_a, 0xCD);
+        assert_eq!(cpu.status, 0);
+    }
+    
+    #[test]
+    fn pull_accumulator_stack() {
+        let mut memory = [0u8; 0x0200];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.register_a = 0x11;
+        memory[0x0000] = op::PLA;
+        memory[0x0001] = op::PLA;
+        memory[0x0002] = op::PLA;
+
+        memory[0x01FB] = 0;
+        memory[0x01FC] = 0b1000_0000;
+        memory[0x01FD] = 0b0101_0101;
+
+        assert_eq!(cpu.stack_pointer, 0xFD);
+        cpu.stack_pointer = 0xFA;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.register_a, 0);
+        assert_eq!(cpu.stack_pointer, 0xFB);
+        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.register_a, 0b1000_0000);
+        assert_eq!(cpu.stack_pointer, 0xFC);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.register_a, 0b0101_0101);
+        assert_eq!(cpu.stack_pointer, 0xFD);
+        assert_eq!(cpu.status, 0);
     }
 }
 

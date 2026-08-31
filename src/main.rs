@@ -14,14 +14,13 @@ fn main() {
     let mut memory = Memory::new();
     memory.load([
         op::LDA_IMM, 0x55,
-        op::LDA_IMM, 0x65,
-        op::BRK
+        op::LDA_IMM, 0x65
     ]);
     let mut cpu = Cpu::new();
     cpu.reset();
 
 
-    while !cpu.has_breaked() {
+    for _ in 0..2 {
         cycles += cpu.next_op(&mut memory).unwrap();
         println!("Executing operation");
     }

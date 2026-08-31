@@ -1,5 +1,5 @@
 // max size of 6502
-const MOMORY_SIZE: usize = 0xFFFF; 
+pub const MEMORY_SIZE: usize = 0xFFFF + 1; 
 
 #[allow(dead_code)]
 pub trait Bus<T> {
@@ -8,13 +8,13 @@ pub trait Bus<T> {
 }
 
 pub struct Memory {
-    data: [u8; MOMORY_SIZE]
+    data: [u8; MEMORY_SIZE]
 }
 
 impl Memory {
     pub fn new() -> Self { 
         Self { 
-            data: [0; MOMORY_SIZE]
+            data: [0; MEMORY_SIZE]
         }
     }
 

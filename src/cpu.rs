@@ -188,6 +188,8 @@ instructions!{
     JMP_ABS: 0x4C => (JMP, Absolute,    3, false),
     JMP_IND: 0x6C => (JMP, Indirect,    5, false),
 
+    JSR    : 0x20 => (JSR, Absolute,    6, false),
+
     LSR_ACC: 0x4A => (LSR, Accumulator, 2, false), 
     LSR_ZER: 0x46 => (LSR, ZeroPage,    5, false), 
     LSR_ZEX: 0x56 => (LSR, ZeroPageX,   6, false), 
@@ -219,6 +221,9 @@ instructions!{
     ROR_ZEX: 0x76 => (ROR, ZeroPageX,   6, false), 
     ROR_ABS: 0x6E => (ROR, Absolute,    6, false), 
     ROR_ABX: 0x7E => (ROR, AbsoluteX,   7, false),
+
+    RTI    : 0x40 => (RTI, Implied,     6, false),
+    RTS    : 0x60 => (RTS, Implied,     6, false),
 
     SBC_IMM: 0xE9 => (SBC, Immediate,	2, false), 
     SBC_ZER: 0xE5 => (SBC, ZeroPage,	3, false), 
@@ -291,10 +296,6 @@ impl Cpu {
         self.program_counter = 0; 
         self.stack_pointer = 0xFD; 
         self.status = 0;
-    }
-
-    pub fn has_breaked(&self) -> bool {
-        self.status & (StatusFlag::Break as u8) == (StatusFlag::Break as u8)
     }
 
     pub fn next_op(&mut self, bus: &mut impl Bus<u16>) -> Result<u8, String> {
@@ -375,7 +376,14 @@ impl Cpu {
                     branch_taken = true;
                 }
             }, 
-            BRK => { self.set_status(StatusFlag::Break, true); },
+            BRK => {
+                self.program_counter += 1; // Discard next byte
+                self.push_stack(bus, (self.program_counter >> 8) as u8);
+                self.push_stack(bus, (self.program_counter & 0xFF) as u8);
+                let status = self.status | StatusFlag::Unused as u8 | StatusFlag::Break as u8;
+                self.push_stack(bus, status);
+                self.program_counter = crate::Cpu::read_word_little_endian(bus, 0xFFFE);
+            }
             BVC => {
                 if !self.is_set(StatusFlag::Overflow) {
                     self.program_counter = address_result.address;
@@ -415,7 +423,12 @@ impl Cpu {
             INX => { self.register_x = self.increment_value(self.register_x); }, 
             INY => { self.register_y = self.increment_value(self.register_y); }, 
             JMP => { self.program_counter = address_result.address },
-            JSR => { todo!(); }, 
+            JSR => { 
+                let pc = self.program_counter - 1;
+                self.push_stack(bus, (pc >> 8) as u8);
+                self.push_stack(bus, (pc & 0xFF) as u8);
+                self.program_counter = address_result.address;
+            }, 
             LDA => { self.register_a = self.load_value(address_result.address, bus); },
             LDX => { self.register_x = self.load_value(address_result.address, bus); },
             LDY => { self.register_y = self.load_value(address_result.address, bus); },
@@ -469,8 +482,19 @@ impl Cpu {
                     value = self.ror_value(value);
                     bus.write_byte(address_result.address, value);
                 }  }, 
-            RTI => { todo!(); },
-            RTS => { todo!(); }, 
+            RTI => {
+                let status = self.pull_stack(bus);
+                let pc_low = self.pull_stack(bus) as u16;
+                let pc_high = self.pull_stack(bus) as u16;
+                self.status = status & !(StatusFlag::Break as u8);
+                self.program_counter = pc_high << 8 | pc_low;
+            },
+            RTS => { 
+                let pc_low = self.pull_stack(bus) as u16;
+                let pc_high = self.pull_stack(bus) as u16;
+                self.program_counter = pc_high << 8 | pc_low;
+                self.program_counter += 1;
+            }, 
             SBC => { todo!(); }, 
             SEC => { self.set_status(StatusFlag::Carry, true); }, 
             SED => { unimplemented!("Decimal mode is not supported"); }, 
@@ -624,6 +648,8 @@ impl Cpu {
 
                 crate::Cpu::read_word_little_endian(bus, address).into()
             },
+            AddressMode::IndirectX => { todo!(); },
+            AddressMode::IndirectY => { todo!(); },
             AddressMode::Relative => {
                 let relative_value = bus.read_byte(self.program_counter);
                 self.program_counter += 1;
@@ -635,7 +661,6 @@ impl Cpu {
                     page_crossed: address & 0xFF00 != self.program_counter & 0xFF00 
                 }
             }
-            _ => { todo!(); }
         }
     }
 
@@ -657,7 +682,6 @@ impl Cpu {
         self.stack_pointer = self.stack_pointer.wrapping_sub(1);
     }
 
-    
     fn pull_stack(&mut self, bus: &mut impl Bus<u16>) -> u8 {
         self.stack_pointer = self.stack_pointer.wrapping_add(1);
         let stack_address = 0x0100u16 + self.stack_pointer as u16;
@@ -1013,17 +1037,6 @@ mod direct_instruction_tests {
     use crate::cpu::{Cpu, StatusFlag, op_codes::{self as op}};
     use test_case::test_case;
 
-    #[test]
-    fn break_set_status() {
-        let mut mem = [op::LDA_IMM, 0x00, op::BRK];
-        let mut cpu = Cpu::new();
-
-        cpu.next_op(&mut mem).unwrap();
-        assert_eq!(cpu.has_breaked(), false);
-        
-        cpu.next_op(&mut mem).unwrap();
-        assert_eq!(cpu.has_breaked(), true);
-    }
 
     #[test_case(op::CLC, StatusFlag::Carry; "clear carry bit")] 
     #[test_case(op::CLD, StatusFlag::Decimal; "clear decimal bit")] 
@@ -1365,10 +1378,11 @@ mod operation_tests {
 
 #[cfg(test)]
 mod jump_tests {
-    use crate::cpu::{Cpu, op_codes as op};
+    use crate::{bus::MEMORY_SIZE, cpu::{Cpu, StatusFlag, op_codes::{self as op, BRK}}};
+    use test_case::test_case;
 
     #[test]
-    pub fn jump_indirect() {
+    fn jump_indirect() {
         let mut memory = [
             op::JMP_IND, 0x05, 0x00,
             op::NOP, op::NOP,
@@ -1384,7 +1398,7 @@ mod jump_tests {
     }
 
     #[test]
-    pub fn jump_absolute() {
+    fn jump_absolute() {
         let mut memory = [
             op::JMP_ABS, 0x05, 0x00,
             op::NOP, op::NOP,
@@ -1400,7 +1414,7 @@ mod jump_tests {
     }
     
     #[test]
-    pub fn jump_indirect_absolute() {
+    fn jump_indirect_absolute() {
         let mut memory = [
             op::JMP_ABS, 0x05, 0x00,
             op::NOP, op::NOP,
@@ -1414,6 +1428,93 @@ mod jump_tests {
         assert_eq!(cpu.program_counter, 0x0005);
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
         assert_eq!(cpu.program_counter, 0xEFAB);
+    }
+
+    #[test_case(0x025A, 0x02, 0x5C; "Second page pc")]
+    #[test_case(0x0005, 0x00, 0x07; "Zero page pc")]
+    fn jsr_absolute(pc: u16, pc_high: u8, pc_low: u8) {
+        let mut memory = [0; 0x0300];
+        memory[pc as usize] = op::JSR;
+        memory[(pc + 1) as usize] = 0xAB;
+        memory[(pc + 2) as usize] = 0xCD;
+
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.program_counter = pc;
+        assert_eq!(cpu.stack_pointer, 0xFD);        
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 6, "Op cycles");
+        assert_eq!(cpu.stack_pointer, 0xFB, "Stack pointer"); 
+        assert_eq!(cpu.program_counter, 0xCDAB, "Program counter");
+        assert_eq!(memory[0x01FD], pc_high, "Memory 0xFD"); // pc high = 0
+        assert_eq!(memory[0x01FC], pc_low, "Memory 0xFC"); // pc low = 2
+    }
+
+    
+    #[test_case(0x02, 0x5C, 0x025D; "Second page stack")]
+    #[test_case(0x00, 0x07, 0x0008; "Zero page stack")]
+    fn rts(stack_high: u8, stack_low: u8, expected_pc: u16) {
+        let mut memory = [0; 0x0300];
+        memory[0x02AB] = op::RTS;
+        memory[0x02AC] = 0xAB;
+        memory[0x02AD] = 0xCD;
+
+        memory[0x01AB] = stack_high;
+        memory[0x01AA] = stack_low;
+
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.program_counter = 0x02AB;
+        cpu.stack_pointer = 0xA9;       
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 6, "Op cycles");
+        assert_eq!(cpu.stack_pointer, 0xAB, "Stack pointer"); 
+        assert_eq!(cpu.program_counter, expected_pc, "Program counter");
+    }
+
+    #[test]
+    fn brk() {
+        let mut memory = [0; MEMORY_SIZE];
+        memory[0x8000] = BRK;
+        memory[0xFFFE] = 0xAB;
+        memory[0xFFFF] = 0xCD;
+
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.program_counter = 0x8000;
+        cpu.status = StatusFlag::Overflow as u8 | StatusFlag::Zero as u8;
+        assert_eq!(cpu.stack_pointer, 0xFD, "Stack pointer before");
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 7, "Operation cycles");
+        assert_eq!(cpu.program_counter, 0xCDAB, "PC after BRK");
+        assert_eq!(cpu.stack_pointer, 0xFA, "Stack pointer after BRK");
+        assert_eq!(cpu.status, StatusFlag::Overflow as u8 | StatusFlag::Zero as u8, "Current status");
+        assert_eq!(memory[0x01FB], StatusFlag::Overflow as u8 | StatusFlag::Zero as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8, "Status on stack");
+        assert_eq!(memory[0x01FC], 0x02, "pc low on stack");
+        assert_eq!(memory[0x01FD], 0x80, "pc high on stack");
+    }
+
+    
+    #[test]
+    fn rti() {
+        let mut memory = [0; MEMORY_SIZE];
+        memory[0x5000] = op::RTI;
+        memory[0xFFFE] = 0xAB;
+        memory[0xFFFF] = 0xCD;
+        memory[0x01FB] = StatusFlag::Overflow as u8 | StatusFlag::Zero as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8;
+        memory[0x01FC] = 0x02;
+        memory[0x01FD] = 0x80;
+
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.program_counter = 0x5000;
+        cpu.status = StatusFlag::Negative as u8;
+        cpu.stack_pointer = 0xFA;
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 6, "Operation cycles");
+        assert_eq!(cpu.program_counter, 0x8002, "PC after RTI");
+        assert_eq!(cpu.stack_pointer, 0xFD, "Stack pointer after RTI");
+        assert_eq!(cpu.status, StatusFlag::Overflow as u8 | StatusFlag::Zero as u8 | StatusFlag::Unused as u8, "Current status");
     }
 }
 

@@ -4,6 +4,7 @@ use crate::{Bus};
  */
 
 #[repr(u8)]
+#[derive(Clone, Copy)]
 enum StatusFlag {
     Negative =  0x80,
     Overflow =  0x40,
@@ -24,7 +25,9 @@ enum AddressMode {
 
     ZeroPage, ZeroPageX, ZeroPageY,
     Absolute, AbsoluteX, AbsoluteY,
-    Indirect, IndirectX, IndirectY
+    Indirect, IndirectX, IndirectY,
+
+    Relative
 }
 
 #[derive(Clone, Copy)]
@@ -136,6 +139,15 @@ instructions!{
     ASL_ABS: 0x0E => (ASL, Absolute,    6, false),
     ASL_ABX: 0x1E => (ASL, AbsoluteX,   7, false),
     
+    BCC    : 0x90 => (BCC, Relative,    2, true),
+    BCS    : 0xB0 => (BCS, Relative,    2, true),
+    BEQ    : 0xF0 => (BEQ, Relative,    2, true),
+    BMI    : 0x30 => (BMI, Relative,    2, true),
+    BNE    : 0xD0 => (BNE, Relative,    2, true),
+    BPL    : 0x10 => (BPL, Relative,    2, true),
+    BVC    : 0x50 => (BVC, Relative,    2, true),
+    BVS    : 0x70 => (BVS, Relative,    2, true),
+
     BIT_ZER: 0x24 => (BIT, ZeroPage,    3, false), 
     BIT_ABS: 0x2C => (BIT, Absolute,    4, false),
 
@@ -301,7 +313,7 @@ impl Cpu {
 
     fn execute_op(&mut self, instruction: &Instruction, bus: &mut impl Bus<u16>) -> u8 {
         use Mnemonic::*;
-        
+        let mut branch_taken: bool = false;
         let address_result = self.get_address(instruction.address_mode, bus);
         match instruction.mnemonic {
             ADC => { todo!(); }, 
@@ -321,21 +333,61 @@ impl Cpu {
                     bus.write_byte(address_result.address, value);
                 }
             }, 
-            BCC => { todo!(); }, 
-            BCS => { todo!(); }, 
-            BEQ => { todo!(); }, 
+            BCC => { 
+                if !self.is_set(StatusFlag::Carry) {
+                    self.program_counter = address_result.address;
+                    branch_taken = true;
+                }
+            }, 
+            BCS => {  
+                if self.is_set(StatusFlag::Carry) {
+                    self.program_counter = address_result.address;
+                    branch_taken = true;
+                }
+            }, 
+            BEQ => {
+                if self.is_set(StatusFlag::Zero) {
+                    self.program_counter = address_result.address;
+                    branch_taken = true;
+                }
+            }, 
             BIT => { 
                 let value = self.register_a & bus.read_byte(address_result.address);
                 self.set_status(StatusFlag::Zero, value == 0);
                 self.set_status(StatusFlag::Overflow, (value >> 6) & 1 == 1);
                 self.set_status(StatusFlag::Negative, value >> 7 == 1);
             }, 
-            BMI => { todo!(); }, 
-            BNE => { todo!(); }, 
-            BPL => { todo!(); }, 
+            BMI => {  
+                if self.is_set(StatusFlag::Negative) {
+                    self.program_counter = address_result.address;
+                    branch_taken = true;
+                }
+            }, 
+            BNE => {  
+                if !self.is_set(StatusFlag::Zero) {
+                    self.program_counter = address_result.address;
+                    branch_taken = true;
+                }
+            }, 
+            BPL => {  
+                if !self.is_set(StatusFlag::Negative) {
+                    self.program_counter = address_result.address;
+                    branch_taken = true;
+                }
+            }, 
             BRK => { self.set_status(StatusFlag::Break, true); },
-            BVC => { todo!(); }, 
-            BVS => { todo!(); }, 
+            BVC => {
+                if !self.is_set(StatusFlag::Overflow) {
+                    self.program_counter = address_result.address;
+                    branch_taken = true;
+                }
+            }, 
+            BVS => {
+                if self.is_set(StatusFlag::Overflow) {
+                    self.program_counter = address_result.address;
+                    branch_taken = true;
+                }
+            }, 
             CLC => { self.set_status(StatusFlag::Carry, false); },
             CLD => { self.set_status(StatusFlag::Decimal, false); },
             CLI => { self.set_status(StatusFlag::Interrupt, false); },
@@ -454,6 +506,16 @@ impl Cpu {
             }
         }
 
+        if instruction.address_mode == AddressMode::Relative {
+            if !branch_taken {
+                return instruction.cycles;
+            }
+            if instruction.can_cross_page && address_result.page_crossed {
+                return instruction.cycles + 2;
+            }
+            return instruction.cycles + 1;
+        }
+
         if instruction.can_cross_page && address_result.page_crossed {
             instruction.cycles + 1
         } else {
@@ -561,6 +623,17 @@ impl Cpu {
                 self.program_counter += 2;
 
                 crate::Cpu::read_word_little_endian(bus, address).into()
+            },
+            AddressMode::Relative => {
+                let relative_value = bus.read_byte(self.program_counter);
+                self.program_counter += 1;
+
+                let address_offset = relative_value.cast_signed() as i16;
+                let address = self.program_counter.wrapping_add_signed(address_offset);
+                AddressResult { 
+                    address, 
+                    page_crossed: address & 0xFF00 != self.program_counter & 0xFF00 
+                }
             }
             _ => { todo!(); }
         }
@@ -1460,6 +1533,45 @@ mod stack_tests {
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
         assert_eq!(cpu.stack_pointer, 0xFD);
         assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Decimal as u8 | StatusFlag::Unused as u8);
+    }
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use crate::cpu::{Cpu, StatusFlag, op_codes::*};
+    use test_case::test_case;
+
+    #[test_case(BCS, StatusFlag::Carry, true; "Branch if carry set")]
+    #[test_case(BCC, StatusFlag::Carry, false; "Branch if carry clear")]
+    #[test_case(BEQ, StatusFlag::Zero, true; "Branch if equal")]
+    #[test_case(BNE, StatusFlag::Zero, false; "Branch if not equal")]
+    #[test_case(BMI, StatusFlag::Negative, true; "Branch if minus")]
+    #[test_case(BPL, StatusFlag::Negative, false; "Branch if positive")]
+    #[test_case(BVS, StatusFlag::Overflow, true; "Branch if overflow set")]
+    #[test_case(BVC, StatusFlag::Overflow, false; "Branch if overflow clear")]
+    fn take_branch(op_code: u8, flag_condition: StatusFlag, value_condition: bool) {
+        let mut memory = [
+            op_code, 0x05, // +5
+            NOP, NOP, NOP, NOP, NOP,
+            op_code, 0xE5, // -27
+            op_code, 0xE5]; // -27
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.set_status(flag_condition, value_condition);
+
+        // Branch taken, no page jump
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3, "Op cycles, branch taken, no jump");
+        assert_eq!(cpu.program_counter, 0x07, "Program counter, branch taken, no jump");
+
+        // Branch not taken
+        cpu.set_status(flag_condition, !value_condition);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Op cycles, branch not taken");
+        assert_eq!(cpu.program_counter, 0x09, "Program counter, branch not taken");
+
+        // Branch taken with page jump
+        cpu.set_status(flag_condition, value_condition);
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4, "Op cycles, branch taken, page jump");
+        assert_eq!(cpu.program_counter, 0xFFF0, "Program counter, branch taken, page jump");
     }
 }
 

@@ -31,7 +31,6 @@ enum AddressMode {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 enum Mnemonic {
     ADC, AND, ASL, BCC, BCS, BEQ, BIT, BMI, BNE, BPL, BRK, BVC, BVS, CLC,
     CLD, CLI, CLV, CMP, CPX, CPY, DEC, DEX, DEY, EOR, INC, INX, INY, JMP,
@@ -124,6 +123,15 @@ instructions!{
     LDA_INX: 0xA1 => (LDA, IndirectX,   6, false),
     LDA_INY: 0xB1 => (LDA, IndirectY,   5, true),
     
+    ADC_IMM: 0x69 => (ADC, Immediate,   2, false),
+    ADC_ZER: 0x65 => (ADC, ZeroPage,    3, false),
+    ADC_ZEX: 0x75 => (ADC, ZeroPageX,   4, false),
+    ADC_ABS: 0x6D => (ADC, Absolute,    4, false),
+    ADC_ABX: 0x7D => (ADC, AbsoluteX,   4, true),
+    ADC_ABY: 0x79 => (ADC, AbsoluteY,   4, true),
+    ADC_INX: 0x61 => (ADC, IndirectX,   6, false),
+    ADC_INY: 0x71 => (ADC, IndirectY,   5, true),
+
     AND_IMM: 0x29 => (AND, Immediate,   2, false),
     AND_ZER: 0x25 => (AND, ZeroPage,    3, false),
     AND_ZEX: 0x35 => (AND, ZeroPageX,   4, false),
@@ -317,7 +325,16 @@ impl Cpu {
         let mut branch_taken: bool = false;
         let address_result = self.get_address(instruction.address_mode, bus);
         match instruction.mnemonic {
-            ADC => { todo!(); }, 
+            ADC => { 
+                let value = bus.read_byte(address_result.address);
+                let c = self.is_set(StatusFlag::Carry) as u8;
+                let new_value =  self.register_a.wrapping_add(value).wrapping_add(c);
+                self.set_status(StatusFlag::Negative, new_value >> 7 == 1);
+                self.set_status(StatusFlag::Zero, new_value == 0);
+                self.set_status(StatusFlag::Carry, 
+                    new_value < self.register_a || (new_value == self.register_a && value > 0));
+                self.register_a = new_value;
+            }, 
             AND => { 
                 let value = bus.read_byte(address_result.address);
                 self.register_a &= value;
@@ -495,7 +512,18 @@ impl Cpu {
                 self.program_counter = pc_high << 8 | pc_low;
                 self.program_counter += 1;
             }, 
-            SBC => { todo!(); }, 
+            SBC => { 
+                let value = bus.read_byte(address_result.address);
+                let carry_bit = self.is_set(StatusFlag::Carry) as u8;
+                let new_value = self.register_a.wrapping_sub(value).wrapping_sub(1 - carry_bit);
+
+                self.set_status(StatusFlag::Negative, new_value >> 7 == 1);
+                self.set_status(StatusFlag::Zero, new_value == 0);
+                self.set_status(StatusFlag::Carry, 
+                    new_value > self.register_a || (new_value == self.register_a && value > 0)
+                );
+                self.register_a = new_value;
+            }, 
             SEC => { self.set_status(StatusFlag::Carry, true); }, 
             SED => { unimplemented!("Decimal mode is not supported"); }, 
             SEI => { self.set_status(StatusFlag::Interrupt, true); }, 
@@ -1374,6 +1402,80 @@ mod operation_tests {
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
     }
 
+    #[test]
+    fn adc() {
+        let mut memory = [
+            op::ADC_IMM, 55,  // A = 55               C = 0
+            op::ADC_IMM, 100, // A = 155              C = 0
+            op::ADC_IMM, 100, // A = 255              C = 0
+            op::ADC_IMM,   1, // A = 255 + 1 + 0 = 0  C = 1
+            op::ADC_IMM, 255, // A = 0 + 255 + 1 = 0  C = 1 
+            op::ADC_IMM, 15]; // A = 0 +  15 + 1 = 15 C = 0
+        
+        let mut cpu = Cpu::new();
+        cpu.reset();
+
+        assert_eq!(cpu.register_a, 0);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 55);
+        assert_eq!(cpu.status, 0);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 155);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 255);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0);
+        assert_eq!(cpu.status, StatusFlag::Zero as u8 | StatusFlag::Carry as u8);
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0);
+        assert_eq!(cpu.status, StatusFlag::Zero as u8 | StatusFlag::Carry as u8);
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 16);
+        assert_eq!(cpu.status, 0);
+    }
+
+    #[test]
+    fn sbc() {
+        let mut memory = [
+            op::SBC_IMM, 55,   // A = 0 - 55 - (1 - 0) = 200      C = 1  Z = 0 N = 1
+            op::SBC_IMM, 100,  // A = 200 - 100 - (1 - 1) = 100   C = 0  Z = 0 N = 0
+            op::SBC_IMM, 50,   // A = 100 - 50  - (1 - 0) = 49    C = 0  Z = 0 N = 0
+            op::SBC_IMM, 48,   // A = 49 - 48 - (1 - 0) = 0       C = 0  Z = 1 N = 0
+            op::SBC_IMM, 0,    // A = 255                         C = 1  Z = 0 N = 1
+        ];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+
+        assert_eq!(cpu.register_a, 0);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 200);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Negative as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 100);
+        assert_eq!(cpu.status, 0);
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 49);
+        assert_eq!(cpu.status, 0);
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0);
+        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 255);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8 | StatusFlag::Carry as u8);
+    }
 }
 
 #[cfg(test)]

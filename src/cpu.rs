@@ -326,19 +326,38 @@ impl Cpu {
         let address_result = self.get_address(instruction.address_mode, bus);
         match instruction.mnemonic {
             ADC => { 
-                let value = bus.read_byte(address_result.address);
-                let c = self.is_set(StatusFlag::Carry) as u8;
-                let new_value =  self.register_a.wrapping_add(value).wrapping_add(c);
-                self.set_status(StatusFlag::Negative, new_value >> 7 == 1);
-                self.set_status(StatusFlag::Zero, new_value == 0);
-                self.set_status(StatusFlag::Carry, 
-                    new_value < self.register_a || (new_value == self.register_a && value > 0));
-                self.register_a = new_value;
+                let a = self.register_a as u16;
+                let m = bus.read_byte(address_result.address) as u16;
+                let c = self.is_set(StatusFlag::Carry) as u16;
+                let mut result = a + m + c;
+
+                self.set_status(StatusFlag::Negative, result & 0x80 != 0);
+                // Overflow occurs when signs before are equal, but not afterwards
+                self.set_status(StatusFlag::Overflow, (!(a ^ m) & (a ^ result) & 0x80) != 0);
+
+                if self.is_set(StatusFlag::Decimal) {
+                    if (a & 0x0F) + (m & 0x0F) + c > 0x09 {
+                        result += 0x06;
+                    }
+
+                    let carry = result > 0x99;
+                    if carry {
+                        result += 0x60;
+                    }
+
+                    self.set_status(StatusFlag::Carry, carry);
+                }
+                else {
+                    self.set_status(StatusFlag::Carry, result > 0xFF);
+                }
+
+                self.register_a = result as u8;
+                self.set_status(StatusFlag::Zero, result & 0xFF == 0);
             }, 
             AND => { 
                 let value = bus.read_byte(address_result.address);
                 self.register_a &= value;
-                self.set_status(StatusFlag::Negative, self.register_a >> 7 == 1);
+                self.set_status(StatusFlag::Negative, self.register_a & 0x80 != 0);
                 self.set_status(StatusFlag::Zero, self.register_a == 0);
             }, 
             ASL => {
@@ -373,7 +392,7 @@ impl Cpu {
                 let value = self.register_a & bus.read_byte(address_result.address);
                 self.set_status(StatusFlag::Zero, value == 0);
                 self.set_status(StatusFlag::Overflow, (value >> 6) & 1 == 1);
-                self.set_status(StatusFlag::Negative, value >> 7 == 1);
+                self.set_status(StatusFlag::Negative, value & 0x80 != 0);
             }, 
             BMI => {  
                 if self.is_set(StatusFlag::Negative) {
@@ -429,7 +448,7 @@ impl Cpu {
             EOR => { 
                 let value = bus.read_byte(address_result.address);
                 let result = self.register_a ^ value;
-                self.set_status(StatusFlag::Negative, result >> 7 == 1);
+                self.set_status(StatusFlag::Negative, result & 0x80 != 0);
                 self.set_status(StatusFlag::Zero, result == 0);
                 self.register_a = result;
             }, 
@@ -464,7 +483,7 @@ impl Cpu {
                 let value = bus.read_byte(address_result.address);
                 self.register_a |= value;
                 self.set_status(StatusFlag::Zero, self.register_a == 0);
-                self.set_status(StatusFlag::Negative, self.register_a >> 7 == 1);
+                self.set_status(StatusFlag::Negative, self.register_a & 0x80 != 0);
              }, 
             PHA => { self.push_stack(bus, self.register_a); }, 
             PHP => { 
@@ -473,7 +492,7 @@ impl Cpu {
             PLA => { 
                 self.register_a = self.pull_stack(bus);
                 self.set_status(StatusFlag::Zero, self.register_a == 0);
-                self.set_status(StatusFlag::Negative, self.register_a >> 7 == 1);
+                self.set_status(StatusFlag::Negative, self.register_a & 0x80 != 0);
             }, 
             PLP => { 
                 let status = self.pull_stack(bus);
@@ -512,20 +531,40 @@ impl Cpu {
                 self.program_counter = pc_high << 8 | pc_low;
                 self.program_counter += 1;
             }, 
-            SBC => { 
-                let value = bus.read_byte(address_result.address);
-                let carry_bit = self.is_set(StatusFlag::Carry) as u8;
-                let new_value = self.register_a.wrapping_sub(value).wrapping_sub(1 - carry_bit);
+            SBC => {
+                let a = self.register_a as i16;
+                let m = bus.read_byte(address_result.address) as i16;
+                let c = self.is_set(StatusFlag::Carry) as i16;
+                let binary_result = a - m - (1 -  c);
 
-                self.set_status(StatusFlag::Negative, new_value >> 7 == 1);
-                self.set_status(StatusFlag::Zero, new_value == 0);
-                self.set_status(StatusFlag::Carry, 
-                    new_value > self.register_a || (new_value == self.register_a && value > 0)
-                );
-                self.register_a = new_value;
+                self.set_status(StatusFlag::Negative, binary_result & 0x80 != 0);
+                // Overflow occurs when signs before are different and also afterwards
+                self.set_status(StatusFlag::Overflow, ((a ^ m) & (a ^ binary_result) & 0x80) != 0);
+                self.set_status(StatusFlag::Zero, binary_result & 0xFF == 0);
+
+                if self.is_set(StatusFlag::Decimal) {
+                    let mut decimal_result = binary_result;
+
+                    if (a & 0x0F) - (m & 0x0F) - (1 - c) < 0 {
+                        decimal_result -= 0x06;
+                    }
+
+                    let no_borrow = decimal_result >= 0;
+
+                    if !no_borrow {
+                        decimal_result -= 0x60;
+                    }
+
+                    self.set_status(StatusFlag::Carry, no_borrow);
+
+                    self.register_a = decimal_result as u8;
+                } else {
+                    self.set_status(StatusFlag::Carry, binary_result >= 0);
+                    self.register_a = binary_result as u8;
+                }
             }, 
             SEC => { self.set_status(StatusFlag::Carry, true); }, 
-            SED => { unimplemented!("Decimal mode is not supported"); }, 
+            SED => { self.set_status(StatusFlag::Decimal, true); }, 
             SEI => { self.set_status(StatusFlag::Interrupt, true); }, 
             STA => { bus.write_byte(address_result.address, self.register_a); }, 
             STX => { bus.write_byte(address_result.address, self.register_x); }, 
@@ -533,28 +572,28 @@ impl Cpu {
             TAX => { 
                 self.register_x = self.register_a;
                 self.set_status(StatusFlag::Zero, self.register_x == 0);
-                self.set_status(StatusFlag::Negative, self.register_x >> 7 == 1);
+                self.set_status(StatusFlag::Negative, self.register_x & 0x80 != 0);
             }, 
             TAY => { 
                 self.register_y = self.register_a;
                 self.set_status(StatusFlag::Zero, self.register_y == 0);
-                self.set_status(StatusFlag::Negative, self.register_y >> 7 == 1);
+                self.set_status(StatusFlag::Negative, self.register_y & 0x80 != 0);
             }, 
             TSX => { 
                 self.register_x = self.stack_pointer;
                 self.set_status(StatusFlag::Zero, self.register_x == 0);
-                self.set_status(StatusFlag::Negative, self.register_x >> 7 == 1);
+                self.set_status(StatusFlag::Negative, self.register_x & 0x80 != 0);
             }, 
             TXA => { 
                 self.register_a = self.register_x;
                 self.set_status(StatusFlag::Zero, self.register_a == 0);
-                self.set_status(StatusFlag::Negative, self.register_a >> 7 == 1);
+                self.set_status(StatusFlag::Negative, self.register_a & 0x80 != 0);
             }, 
             TXS => { self.stack_pointer = self.register_x; }, 
             TYA => { 
                 self.register_a = self.register_y;
                 self.set_status(StatusFlag::Zero, self.register_a == 0);
-                self.set_status(StatusFlag::Negative, self.register_a >> 7 == 1);
+                self.set_status(StatusFlag::Negative, self.register_a & 0x80 != 0);
             }
         }
 
@@ -584,8 +623,8 @@ impl Cpu {
     
     fn asl_value(&mut self, value: u8) -> u8 {
         let new_value = value << 1;
-        self.set_status(StatusFlag::Carry, value >> 7 == 1);
-        self.set_status(StatusFlag::Negative, new_value >> 7 == 1);
+        self.set_status(StatusFlag::Carry, value & 0x80 != 0);
+        self.set_status(StatusFlag::Negative, new_value & 0x80 != 0);
         self.set_status(StatusFlag::Zero, new_value == 0);
         return new_value;
     }
@@ -604,8 +643,8 @@ impl Cpu {
             new_value |= 1;
         }
 
-        self.set_status(StatusFlag::Carry, value >> 7 == 1);
-        self.set_status(StatusFlag::Negative, new_value >> 7 == 1);
+        self.set_status(StatusFlag::Carry, value & 0x80 != 0);
+        self.set_status(StatusFlag::Negative, new_value & 0x80 != 0);
         self.set_status(StatusFlag::Zero, new_value == 0);
         new_value
     }
@@ -617,7 +656,7 @@ impl Cpu {
         }
 
         self.set_status(StatusFlag::Carry, value & 1 == 1);
-        self.set_status(StatusFlag::Negative, new_value >> 7 == 1);
+        self.set_status(StatusFlag::Negative, new_value & 0x80 != 0);
         self.set_status(StatusFlag::Zero, new_value == 0);
         new_value
     }
@@ -676,8 +715,26 @@ impl Cpu {
 
                 crate::Cpu::read_word_little_endian(bus, address).into()
             },
-            AddressMode::IndirectX => { todo!(); },
-            AddressMode::IndirectY => { todo!(); },
+            AddressMode::IndirectX => {
+                let mut indirect_address = bus.read_byte(self.program_counter) as u16;
+                self.program_counter += 1;
+                indirect_address += self.register_x as u16;
+                indirect_address &= 0x00FF;
+                
+                let add_low = bus.read_byte(indirect_address) as u16;
+                let add_high = bus.read_byte(indirect_address.wrapping_add(1) & 0xFF) as u16;
+                (add_high << 8 | add_low).into()
+            },
+            AddressMode::IndirectY => {
+                let zero_page_address = bus.read_byte(self.program_counter) as u16;
+                self.program_counter += 1;
+                let indirect_address = crate::Cpu::read_word_little_endian(bus, zero_page_address);
+                let indirect_address_offset_y = indirect_address.wrapping_add(self.register_y as u16);
+                AddressResult { 
+                    address: indirect_address_offset_y, 
+                    page_crossed: indirect_address & 0xFF00 != indirect_address_offset_y & 0xFF00
+                }
+            },
             AddressMode::Relative => {
                 let relative_value = bus.read_byte(self.program_counter);
                 self.program_counter += 1;
@@ -731,14 +788,14 @@ impl Cpu {
     
     fn increment_value(&mut self, value: u8) -> u8 {
         let increment_value = value.wrapping_add(1);
-        self.set_status(StatusFlag::Negative, increment_value >> 7 == 1);
+        self.set_status(StatusFlag::Negative, increment_value & 0x80 != 0);
         self.set_status(StatusFlag::Zero, increment_value == 0);
         return increment_value;
     }
 
     fn decrement_value(&mut self, value: u8) -> u8 {
         let decrement_value = value.wrapping_sub(1);
-        self.set_status(StatusFlag::Negative, decrement_value >> 7 == 1);
+        self.set_status(StatusFlag::Negative, decrement_value & 0x80 != 0);
         self.set_status(StatusFlag::Zero, decrement_value == 0);
         return decrement_value;
     }
@@ -746,7 +803,7 @@ impl Cpu {
     fn compare(&mut self, register_value: u8, value: u8) {
         self.set_status(StatusFlag::Carry, register_value >= value);
         self.set_status(StatusFlag::Zero, register_value == value);
-        self.set_status(StatusFlag::Negative, register_value.wrapping_sub(value) >> 7 == 1);
+        self.set_status(StatusFlag::Negative, register_value.wrapping_sub(value) & 0x80 != 0);
     }
 }
 
@@ -1113,14 +1170,16 @@ mod direct_instruction_tests {
         assert_eq!(cpu.status, 0xFF);
     }
 
-    #[should_panic]
     #[test]
     fn set_decimal_should_panic() {
         let mut memory = [op::SED];
         let mut cpu = Cpu::new();
 
         cpu.reset();
+        assert_eq!(cpu.is_set(StatusFlag::Decimal), false);
+
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.is_set(StatusFlag::Decimal), true);
     }
 
     #[test]
@@ -1405,12 +1464,12 @@ mod operation_tests {
     #[test]
     fn adc() {
         let mut memory = [
-            op::ADC_IMM, 55,  // A = 55               C = 0
-            op::ADC_IMM, 100, // A = 155              C = 0
-            op::ADC_IMM, 100, // A = 255              C = 0
-            op::ADC_IMM,   1, // A = 255 + 1 + 0 = 0  C = 1
-            op::ADC_IMM, 255, // A = 0 + 255 + 1 = 0  C = 1 
-            op::ADC_IMM, 15]; // A = 0 +  15 + 1 = 15 C = 0
+            op::ADC_IMM, 55, 
+            op::ADC_IMM, 100,
+            op::ADC_IMM, 100,
+            op::ADC_IMM,   1,
+            op::ADC_IMM, 255,
+            op::ADC_IMM, 15];
         
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -1423,7 +1482,7 @@ mod operation_tests {
 
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 155);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8);
         
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 255);
@@ -1443,38 +1502,95 @@ mod operation_tests {
     }
 
     #[test]
-    fn sbc() {
+    fn adc_decimal_mode() {
         let mut memory = [
-            op::SBC_IMM, 55,   // A = 0 - 55 - (1 - 0) = 200      C = 1  Z = 0 N = 1
-            op::SBC_IMM, 100,  // A = 200 - 100 - (1 - 1) = 100   C = 0  Z = 0 N = 0
-            op::SBC_IMM, 50,   // A = 100 - 50  - (1 - 0) = 49    C = 0  Z = 0 N = 0
-            op::SBC_IMM, 48,   // A = 49 - 48 - (1 - 0) = 0       C = 0  Z = 1 N = 0
-            op::SBC_IMM, 0,    // A = 255                         C = 1  Z = 0 N = 1
+            op::ADC_IMM, 0x09, 
+            op::ADC_IMM, 0x05,
+            op::ADC_IMM, 0x55, 
+            op::ADC_IMM, 0x30, 
+            op::ADC_IMM, 0x05,  
+            op::ADC_IMM, 0x06,   
+            op::ADC_IMM, 0x89  
         ];
         let mut cpu = Cpu::new();
         cpu.reset();
+        cpu.set_status(StatusFlag::Decimal, true);
+        assert_eq!(cpu.register_a, 0);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0x09);
+        assert_eq!(cpu.status, StatusFlag::Decimal as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0x14);
+        assert_eq!(cpu.status, StatusFlag::Decimal as u8);
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0x69);
+        assert_eq!(cpu.status, StatusFlag::Decimal as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0x99);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8 | StatusFlag::Decimal as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0x04);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Negative as u8 | StatusFlag::Decimal as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0x11);
+        assert_eq!(cpu.status, StatusFlag::Decimal as u8);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 0x00);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8 | StatusFlag::Zero as u8 | StatusFlag::Carry as u8 | StatusFlag::Decimal as u8)
+    }
+
+    #[test]
+    fn sbc() {
+        let mut memory = [
+            op::SBC_IMM, 55, 
+            op::SBC_IMM, 100,
+            op::SBC_IMM, 50, 
+            op::SBC_IMM, 48, 
+            op::SBC_IMM, 2,  
+        ];
+        let mut cpu = Cpu::new();
+        cpu.reset();
+        cpu.status = StatusFlag::Carry as u8;
 
         assert_eq!(cpu.register_a, 0);
 
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 200);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Negative as u8);
+        assert_eq!(cpu.register_a, 201);
+        assert_eq!(cpu.status, StatusFlag::Negative as u8);
 
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 100);
-        assert_eq!(cpu.status, 0);
+        assert_eq!(cpu.status, StatusFlag::Overflow as u8 | StatusFlag::Carry as u8);
         
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 49);
-        assert_eq!(cpu.status, 0);
+        assert_eq!(cpu.register_a, 50);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8);
+        
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, 2);
+        assert_eq!(cpu.status, StatusFlag::Carry as u8);
         
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 0);
-        assert_eq!(cpu.status, StatusFlag::Zero as u8);
-        
+        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Zero as u8);
+    }
+
+    #[test_case(0xFF, 0x7F, false, true)]
+    #[test_case(0xFF, 0x7F, true, false)]
+    fn sbc_overflow(a: u8, m: u8, c: bool, expected_v: bool) {
+        let mut memory = [op::SBC_IMM, m];
+        let mut cpu = Cpu::new();
+        cpu.register_a = a;
+        cpu.set_status(StatusFlag::Carry, c);
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 255);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8 | StatusFlag::Carry as u8);
+        assert_eq!(cpu.is_set(StatusFlag::Overflow), expected_v);
     }
 }
 
@@ -1889,6 +2005,50 @@ mod address_modes_tests {
         assert_eq!(cpu.get_address(AddressMode::Indirect, &mem), 0xBBAA.into());
         assert_eq!(cpu.program_counter, 0x0101);
     }
+
+    #[test_case(0x00, 0x02AB.into(); "zero x")]
+    #[test_case(0x10, 0x05EF.into(); "non zero x")]
+    #[test_case(0x7F, 0xCD80.into(); "boundary msb on wrap around")]
+    #[test_case(0x80, 0x1FCD.into(); "full zero page wrap around")]
+    fn indirect_x(reg_x: u8, address: AddressResult) {
+        let mut memory = [0u8; 0x0300];
+        memory[0x0080] = 0xAB;
+        memory[0x0081] = 0x02;
+        memory[0x0090] = 0xEF;
+        memory[0x0091] = 0x05;
+        memory[0x00FF] = 0x80;
+        memory[0x0000] = 0xCD;
+        memory[0x0001] = 0x1F;
+        memory[0x0200] = 0x80;
+        let mut cpu = Cpu::new();
+        cpu.program_counter = 0x0200;
+        cpu.register_x = reg_x;
+
+        assert_eq!(cpu.get_address(AddressMode::IndirectX, &memory), address);
+        assert_eq!(cpu.program_counter, 0x0201);
+        assert_eq!(cpu.register_x, reg_x);
+    }
+
+    #[test_case(0x00, 0x02AB.into(); "zero offset")]
+    #[test_case(0x10, 0x02BB.into(); "within page offset")]
+    #[test_case(0x54, 0x02FF.into(); "at the boundary, no page cross")]
+    #[test_case(0x55, AddressResult { address: 0x0300, page_crossed: true }; "over the boundary, page crossed")]
+    fn indirect_y(reg_y: u8, address: AddressResult) {
+        let mut memory = [0u8; 0x0300];
+        memory[0x0080] = 0xAB;
+        memory[0x0081] = 0x02;
+        memory[0x0200] = 0x80;
+        let mut cpu = Cpu::new();
+        cpu.program_counter = 0x0200;
+        cpu.register_y = reg_y;
+
+        assert_eq!(cpu.get_address(AddressMode::IndirectY, &memory), address);
+        assert_eq!(cpu.program_counter, 0x0201);
+        assert_eq!(cpu.register_y, reg_y);
+
+    }
+
+
 }
 
 #[cfg(test)]

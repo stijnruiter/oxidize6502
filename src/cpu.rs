@@ -334,6 +334,7 @@ impl Cpu {
                 self.set_status(StatusFlag::Negative, result & 0x80 != 0);
                 // Overflow occurs when signs before are equal, but not afterwards
                 self.set_status(StatusFlag::Overflow, (!(a ^ m) & (a ^ result) & 0x80) != 0);
+                self.set_status(StatusFlag::Zero, result & 0xFF == 0);
 
                 if self.is_set(StatusFlag::Decimal) {
                     if (a & 0x0F) + (m & 0x0F) + c > 0x09 {
@@ -352,7 +353,6 @@ impl Cpu {
                 }
 
                 self.register_a = result as u8;
-                self.set_status(StatusFlag::Zero, result & 0xFF == 0);
             }, 
             AND => { 
                 let value = bus.read_byte(address_result.address);
@@ -1461,137 +1461,114 @@ mod operation_tests {
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
     }
 
-    #[test]
-    fn adc() {
-        let mut memory = [
-            op::ADC_IMM, 55, 
-            op::ADC_IMM, 100,
-            op::ADC_IMM, 100,
-            op::ADC_IMM,   1,
-            op::ADC_IMM, 255,
-            op::ADC_IMM, 15];
-        
+    #[test_case(0x00, 0x00, false, 0x00, StatusFlag::Zero as u8; "zero")] 
+    #[test_case(0x50, 0x50, false, 0xa0, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "pos overflow")] 
+    #[test_case(0xff, 0xff, false, 0xfe, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "max no overflow")] 
+    #[test_case(0x80, 0xff, false, 0x7f, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "neg overflow to pos")] 
+    #[test_case(0x7f, 0x01, false, 0x80, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "classic overflow")] 
+    #[test_case(0xff, 0x01, false, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "wrap to zero")] 
+    #[test_case(0x01, 0x01, true, 0x03, 0; "carry in")] 
+    #[test_case(0x00, 0x00, true, 0x01, 0; "carry in only")] 
+    #[test_case(0x40, 0x40, false, 0x80, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "neg result")] #[test_case(0x7f, 0x00, true, 0x80, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "bin_adc_carry_into_bit7")]
+    #[test_case(0x80, 0x80, true, 0x01, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "bin_adc_bit7_plus_bit7_plus_carry")]
+    #[test_case(0xff, 0x00, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "bin_adc_zero_with_carry_out")]
+    #[test_case(0x80, 0x01, false, 0x81, StatusFlag::Negative as u8; "bin_adc_negative_no_overflow")]
+    #[test_case(0x80, 0x80, false, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8 | StatusFlag::Overflow as u8; "bin_adc_negative_plus_negative_no_overflow")]
+    fn adc_binary_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: u8)
+    {
+        let mut memory = [op::ADC_IMM, m];
         let mut cpu = Cpu::new();
-        cpu.reset();
-
-        assert_eq!(cpu.register_a, 0);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 55);
-        assert_eq!(cpu.status, 0);
+        cpu.register_a = a;
+        cpu.set_status(StatusFlag::Decimal, false);
+        cpu.set_status(StatusFlag::Carry, c);
 
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 155);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8);
-        
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 255);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
-        
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0);
-        assert_eq!(cpu.status, StatusFlag::Zero as u8 | StatusFlag::Carry as u8);
-        
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0);
-        assert_eq!(cpu.status, StatusFlag::Zero as u8 | StatusFlag::Carry as u8);
-        
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 16);
-        assert_eq!(cpu.status, 0);
+        assert_eq!(cpu.register_a, expected_a);
+        assert_eq!(cpu.status, expected_status);
     }
 
-    #[test]
-    fn adc_decimal_mode() {
-        let mut memory = [
-            op::ADC_IMM, 0x09, 
-            op::ADC_IMM, 0x05,
-            op::ADC_IMM, 0x55, 
-            op::ADC_IMM, 0x30, 
-            op::ADC_IMM, 0x05,  
-            op::ADC_IMM, 0x06,   
-            op::ADC_IMM, 0x89  
-        ];
-        let mut cpu = Cpu::new();
-        cpu.reset();
-        cpu.set_status(StatusFlag::Decimal, true);
-        assert_eq!(cpu.register_a, 0);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0x09);
-        assert_eq!(cpu.status, StatusFlag::Decimal as u8);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0x14);
-        assert_eq!(cpu.status, StatusFlag::Decimal as u8);
-        
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0x69);
-        assert_eq!(cpu.status, StatusFlag::Decimal as u8);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0x99);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8 | StatusFlag::Decimal as u8);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0x04);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Negative as u8 | StatusFlag::Decimal as u8);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0x11);
-        assert_eq!(cpu.status, StatusFlag::Decimal as u8);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0x00);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8 | StatusFlag::Zero as u8 | StatusFlag::Carry as u8 | StatusFlag::Decimal as u8)
-    }
-
-    #[test]
-    fn sbc() {
-        let mut memory = [
-            op::SBC_IMM, 55, 
-            op::SBC_IMM, 100,
-            op::SBC_IMM, 50, 
-            op::SBC_IMM, 48, 
-            op::SBC_IMM, 2,  
-        ];
-        let mut cpu = Cpu::new();
-        cpu.reset();
-        cpu.status = StatusFlag::Carry as u8;
-
-        assert_eq!(cpu.register_a, 0);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 201);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
-
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 100);
-        assert_eq!(cpu.status, StatusFlag::Overflow as u8 | StatusFlag::Carry as u8);
-        
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 50);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8);
-        
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 2);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8);
-        
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.register_a, 0);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Zero as u8);
-    }
-
-    #[test_case(0xFF, 0x7F, false, true)]
-    #[test_case(0xFF, 0x7F, true, false)]
-    fn sbc_overflow(a: u8, m: u8, c: bool, expected_v: bool) {
+    #[test_case(0x05, 0x03, true, 0x02, StatusFlag::Carry as u8; "normal")]
+    #[test_case(0x00, 0x01, true, 0xff, StatusFlag::Negative as u8; "borrow")]
+    #[test_case(0x80, 0x01, true, 0x7f, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "neg_minus_pos_overflow")]
+    #[test_case(0x7f, 0xff, true, 0x80, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "pos_minus_neg_overflow")]
+    #[test_case(0x00, 0x00, false, 0xff, StatusFlag::Negative as u8; "extra_borrow_cin0")]
+    #[test_case(0x03, 0x03, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8 ; "exact_zero")]
+    #[test_case(0xff, 0x00, true, 0xff, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "no_borrow_needed")]
+    #[test_case(0x00, 0x00, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "bin_sbc_zero_minus_zero_cin1")]
+    #[test_case(0x00, 0x01, true, 0xff, StatusFlag::Negative as u8; "bin_sbc_zero_minus_one")]
+    #[test_case(0xff, 0x01, true, 0xfe, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "bin_sbc_max_minus_one")]
+    #[test_case(0x80, 0xff, true, 0x81, StatusFlag::Negative as u8; "bin_sbc_min_minus_one_overflow")]
+    #[test_case(0x80, 0x00, false, 0x7f, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "bin_sbc_carry_in_changes_overflow")]
+    fn sbc_binary_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: u8)
+    {
         let mut memory = [op::SBC_IMM, m];
         let mut cpu = Cpu::new();
         cpu.register_a = a;
+        cpu.set_status(StatusFlag::Decimal, false);
         cpu.set_status(StatusFlag::Carry, c);
+
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.is_set(StatusFlag::Overflow), expected_v);
+        assert_eq!(cpu.register_a, expected_a);
+        assert_eq!(cpu.status, expected_status);
     }
+    
+    #[test_case(0x00, 0x09, false, 0x09, 0; "dec_adc_simple")]
+    #[test_case(0x09, 0x01, false, 0x10, 0; "dec_adc_low_nibble_carry")]
+    #[test_case(0x99, 0x01, false, 0x00, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_adc_full_carry_out")]
+    #[test_case(0x99, 0x01, false, 0x00, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_adc_z_flag_bug")]
+    #[test_case(0x69, 0x30, false, 0x99, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "dec_adc_nv_bug_99")]
+    #[test_case(0x09, 0x00, true, 0x10, 0; "dec_adc_carry_in_dec")]
+    #[test_case(0x58, 0x46, false, 0x04, StatusFlag::Carry as u8 | StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "dec_adc_both_nibbles_carry")]
+    #[test_case(0x99, 0x99, true, 0x99, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "dec_adc_max_bcd")]
+    #[test_case(0x0f, 0x00, false, 0x15, 0; "dec_adc_invalid_bcd_high_nibble")]
+    #[test_case(0xff, 0xff, false, 0x64, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_adc_invalid_bcd_both")]
+    #[test_case(0x08, 0x01, false, 0x09, 0; "dec_adc_low_nibble_no_carry")]
+    #[test_case(0x09, 0x00, true, 0x10, 0; "dec_adc_low_nibble_carry_with_carry_in")]
+    #[test_case(0x40, 0x10, false, 0x50, 0; "dec_adc_high_nibble_no_carry")]
+    #[test_case(0x90, 0x10, false, 0x00, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_adc_high_nibble_carry")]
+    fn adc_decimal_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: u8)
+    {
+        let mut memory = [op::ADC_IMM, m];
+        let mut cpu = Cpu::new();
+        cpu.register_a = a;
+        cpu.set_status(StatusFlag::Decimal, true);
+        cpu.set_status(StatusFlag::Carry, c);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, expected_a);
+        assert_eq!(cpu.status, expected_status | StatusFlag::Decimal as u8);
+    }
+
+    #[test_case(0x09, 0x05, true, 0x04, StatusFlag::Carry as u8; "dec_sbc_simple")]
+    #[test_case(0x10, 0x01, true, 0x09, StatusFlag::Carry as u8; "dec_sbc_low_nibble_borrow")]
+    #[test_case(0x00, 0x01, true, 0x99, StatusFlag::Negative as u8; "dec_sbc_full_borrow")]
+    #[test_case(0x00, 0x01, true, 0x99, StatusFlag::Negative as u8; "dec_sbc_flags_match_binary")]
+    #[test_case(0x50, 0x25, true, 0x25, StatusFlag::Carry as u8; "dec_sbc_carry_in_as_no_borrow")]
+    #[test_case(0x05, 0x05, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "dec_sbc_zero_result")]
+    #[test_case(0x50, 0x25, false, 0x24, StatusFlag::Carry as u8; "dec_sbc_extra_borrow_cin0")]
+    #[test_case(0xff, 0x00, true, 0xff, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_sbc_invalid_bcd")]
+    #[test_case(0x00, 0x00, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "dec_sbc_00_minus_00")]
+    #[test_case(0x00, 0x01, true, 0x99, StatusFlag::Negative as u8; "dec_sbc_00_minus_01")]
+    #[test_case(0x10, 0x01, true, 0x09, StatusFlag::Carry as u8; "dec_sbc_10_minus_01")]
+    #[test_case(0x10, 0x10, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "dec_sbc_10_minus_10")]
+    #[test_case(0x99, 0x01, true, 0x98, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_sbc_99_minus_01")]
+    #[test_case(0x00, 0x99, true, 0x01, 0; "dec_sbc_00_minus_99")]
+    #[test_case(0x50, 0x51, true, 0x99, StatusFlag::Negative as u8; "dec_sbc_50_minus_51")]
+    #[test_case(0x99, 0x99, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "dec_sbc_99_minus_99")]
+    #[test_case(0x80, 0x01, true, 0x79, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "dec_sbc_negative_overflow")]
+    fn sbc_decimal_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: u8)
+    {
+        let mut memory = [op::SBC_IMM, m];
+        let mut cpu = Cpu::new();
+        cpu.register_a = a;
+        cpu.set_status(StatusFlag::Decimal, true);
+        cpu.set_status(StatusFlag::Carry, c);
+
+        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.register_a, expected_a);
+        assert_eq!(cpu.status, expected_status | StatusFlag::Decimal as u8);
+    }
+
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@ pub struct Memory {
     data: [u8; MEMORY_SIZE]
 }
 
+#[allow(dead_code)]
 impl Memory {
     pub fn new() -> Self { 
         Self { 
@@ -31,5 +32,15 @@ impl Bus<u16> for Memory {
     fn write_byte(&mut self, address: u16, value: u8) {
         // TODO: range check
         self.data[address as usize] = value;
+    }
+}
+
+impl<const N: usize> Bus<u16> for [u8; N] {
+    fn read_byte(&self, address: u16) -> u8 {
+        self[address as usize]
+    }
+
+    fn write_byte(&mut self, address: u16, value: u8) {
+        self[address as usize] = value;
     }
 }

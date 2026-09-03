@@ -1,7 +1,23 @@
-use crate::{Bus};
+use std::fmt::Display;
+#[allow(unused_imports)]
+use std::io::Write;
+
+use crate::bus::Bus;
 /**
  * https://6502.org/users/obelisk/6502/reference.html
  */
+
+ #[allow(unused_macros)]
+macro_rules! log_println {
+    ($($arg:tt)*) => {{
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("output.log")
+            .unwrap();
+        writeln!(file, $($arg)*).unwrap();
+    }};
+}
 
 #[repr(u8)]
 #[derive(Clone, Copy)]
@@ -11,12 +27,12 @@ enum StatusFlag {
     Unused =    0x20, 
     Break =     0x10,
     Decimal =   0x08,
-    Interrupt = 0x04,
+    InterruptDisable = 0x04,
     Zero =      0x02,
     Carry =     0x01,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum AddressMode {
     Accumulator,
 
@@ -30,15 +46,27 @@ enum AddressMode {
     Relative
 }
 
-#[derive(Clone, Copy)]
-enum Mnemonic {
+impl Display for AddressMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mnemonic {
     ADC, AND, ASL, BCC, BCS, BEQ, BIT, BMI, BNE, BPL, BRK, BVC, BVS, CLC,
     CLD, CLI, CLV, CMP, CPX, CPY, DEC, DEX, DEY, EOR, INC, INX, INY, JMP,
     JSR, LDA, LDX, LDY, LSR, NOP, ORA, PHA, PHP, PLA, PLP, ROL, ROR, RTI,
     RTS, SBC, SEC, SED, SEI, STA, STX, STY, TAX, TAY, TSX, TXA, TXS, TYA
 }
 
-#[derive(Clone, Copy)]
+impl Display for Mnemonic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 struct Instruction {
     address_mode: AddressMode,
     mnemonic: Mnemonic,
@@ -97,7 +125,7 @@ instructions!{
     INC_ZER: 0xE6 => (INC, ZeroPage,    5, false),
     INC_ZEX: 0xF6 => (INC, ZeroPageX,   6, false),
     INC_ABS: 0xEE => (INC, Absolute,    6, false),
-    INC_ABX: 0xFE => (INC, AbsoluteY,   7, false),
+    INC_ABX: 0xFE => (INC, AbsoluteX,   7, false),
 
     INX:     0xE8 => (INX, Implied,     2, false),
     INY:     0xC8 => (INY, Implied,     2, false),
@@ -307,12 +335,15 @@ impl Cpu {
     }
 
     pub fn next_op(&mut self, bus: &mut impl Bus<u16>) -> Result<u8, String> {
+        // let pc = self.program_counter;
         let next_instruction = bus.read_byte(self.program_counter);
         self.program_counter += 1;
 
         match &INSTRUCTION_SET[next_instruction as usize] {
             Some(instruction) => {
-                return Ok(self.execute_op(instruction, bus))
+                let return_val =  Ok(self.execute_op(instruction, bus));
+                // println!("0x{:04X} {} {}  A={:02X} X={:02X} Y={:02X} SP={:02X} P={:08b}", pc, instruction.mnemonic, instruction.address_mode, self.register_a, self.register_x, self.register_y, self.stack_pointer, self.status);
+                return return_val;
             },
             None => {
                 return Err(format!("Operation {:02X} not supported", next_instruction))
@@ -389,10 +420,11 @@ impl Cpu {
                 }
             }, 
             BIT => { 
-                let value = self.register_a & bus.read_byte(address_result.address);
+                let m = bus.read_byte(address_result.address);
+                let value = self.register_a & m;
                 self.set_status(StatusFlag::Zero, value == 0);
-                self.set_status(StatusFlag::Overflow, (value >> 6) & 1 == 1);
-                self.set_status(StatusFlag::Negative, value & 0x80 != 0);
+                self.set_status(StatusFlag::Overflow, (m >> 6) & 1 == 1);
+                self.set_status(StatusFlag::Negative, m & 0x80 != 0);
             }, 
             BMI => {  
                 if self.is_set(StatusFlag::Negative) {
@@ -418,7 +450,8 @@ impl Cpu {
                 self.push_stack(bus, (self.program_counter & 0xFF) as u8);
                 let status = self.status | StatusFlag::Unused as u8 | StatusFlag::Break as u8;
                 self.push_stack(bus, status);
-                self.program_counter = crate::Cpu::read_word_little_endian(bus, 0xFFFE);
+                self.program_counter = Cpu::read_word_little_endian(bus, 0xFFFE);
+                self.status |= StatusFlag::InterruptDisable as u8;
             }
             BVC => {
                 if !self.is_set(StatusFlag::Overflow) {
@@ -434,7 +467,7 @@ impl Cpu {
             }, 
             CLC => { self.set_status(StatusFlag::Carry, false); },
             CLD => { self.set_status(StatusFlag::Decimal, false); },
-            CLI => { self.set_status(StatusFlag::Interrupt, false); },
+            CLI => { self.set_status(StatusFlag::InterruptDisable, false); },
             CLV => { self.set_status(StatusFlag::Overflow, false); },
             CMP => { self.compare(self.register_a, bus.read_byte(address_result.address)) }, 
             CPX => { self.compare(self.register_x, bus.read_byte(address_result.address)) }, 
@@ -522,7 +555,7 @@ impl Cpu {
                 let status = self.pull_stack(bus);
                 let pc_low = self.pull_stack(bus) as u16;
                 let pc_high = self.pull_stack(bus) as u16;
-                self.status = status & !(StatusFlag::Break as u8);
+                self.status = (status & !(StatusFlag::Break as u8)) | StatusFlag::Unused as u8;
                 self.program_counter = pc_high << 8 | pc_low;
             },
             RTS => { 
@@ -531,7 +564,7 @@ impl Cpu {
                 self.program_counter = pc_high << 8 | pc_low;
                 self.program_counter += 1;
             }, 
-            SBC => {
+            SBC => { 
                 let a = self.register_a as i16;
                 let m = bus.read_byte(address_result.address) as i16;
                 let c = self.is_set(StatusFlag::Carry) as i16;
@@ -549,7 +582,7 @@ impl Cpu {
                         decimal_result -= 0x06;
                     }
 
-                    let no_borrow = decimal_result >= 0;
+                    let no_borrow = binary_result >= 0;
 
                     if !no_borrow {
                         decimal_result -= 0x60;
@@ -565,7 +598,7 @@ impl Cpu {
             }, 
             SEC => { self.set_status(StatusFlag::Carry, true); }, 
             SED => { self.set_status(StatusFlag::Decimal, true); }, 
-            SEI => { self.set_status(StatusFlag::Interrupt, true); }, 
+            SEI => { self.set_status(StatusFlag::InterruptDisable, true); }, 
             STA => { bus.write_byte(address_result.address, self.register_a); }, 
             STX => { bus.write_byte(address_result.address, self.register_x); }, 
             STY => { bus.write_byte(address_result.address, self.register_y); }, 
@@ -705,15 +738,14 @@ impl Cpu {
                 }
             },
             AddressMode::Indirect => {
-                let low = bus.read_byte(self.program_counter) as u16;
+                let pointer = self.fetch_word_at_pc(bus);
+
                 // emulate bug in original 6502, where lsb 0xXXFF causes the msb to wrap around page, reading 0xXX00 instead of next page
-                let msb_address = if self.program_counter & 0x00FF == 0x00FF { self.program_counter & 0xFF00} else { self.program_counter + 1};
+                let msb_address = if pointer & 0x00FF == 0x00FF { pointer & 0xFF00} else { pointer + 1};
+                let low = bus.read_byte(pointer) as u16; 
                 let high =  bus.read_byte(msb_address) as u16;
                 let address = high << 8 | low;
-
-                self.program_counter += 2;
-
-                crate::Cpu::read_word_little_endian(bus, address).into()
+                address.into()
             },
             AddressMode::IndirectX => {
                 let mut indirect_address = bus.read_byte(self.program_counter) as u16;
@@ -728,7 +760,11 @@ impl Cpu {
             AddressMode::IndirectY => {
                 let zero_page_address = bus.read_byte(self.program_counter) as u16;
                 self.program_counter += 1;
-                let indirect_address = crate::Cpu::read_word_little_endian(bus, zero_page_address);
+
+                let low = bus.read_byte(zero_page_address) as u16;
+                let high = bus.read_byte(zero_page_address.wrapping_add(1) & 0x00FF) as u16;
+                let indirect_address = high << 8 | low;
+
                 let indirect_address_offset_y = indirect_address.wrapping_add(self.register_y as u16);
                 AddressResult { 
                     address: indirect_address_offset_y, 
@@ -750,14 +786,14 @@ impl Cpu {
     }
 
     fn fetch_word_at_pc(&mut self, bus: &impl Bus<u16>) -> u16 {
-        let address = crate::Cpu::read_word_little_endian(bus, self.program_counter);
+        let address = Cpu::read_word_little_endian(bus, self.program_counter);
         self.program_counter += 2;
         address
     }
 
     fn read_word_little_endian(bus: &impl Bus<u16>, address: u16) -> u16 {
         let low = bus.read_byte(address) as u16;
-        let high = bus.read_byte(address + 1) as u16;
+        let high = bus.read_byte(address.wrapping_add(1)) as u16;
         high << 8 | low
     }
 
@@ -801,9 +837,10 @@ impl Cpu {
     }
     
     fn compare(&mut self, register_value: u8, value: u8) {
+        let result = register_value.wrapping_sub(value);
         self.set_status(StatusFlag::Carry, register_value >= value);
-        self.set_status(StatusFlag::Zero, register_value == value);
-        self.set_status(StatusFlag::Negative, register_value.wrapping_sub(value) & 0x80 != 0);
+        self.set_status(StatusFlag::Zero, result == 0);
+        self.set_status(StatusFlag::Negative, result & 0x80 != 0);
     }
 }
 
@@ -1125,7 +1162,7 @@ mod direct_instruction_tests {
 
     #[test_case(op::CLC, StatusFlag::Carry; "clear carry bit")] 
     #[test_case(op::CLD, StatusFlag::Decimal; "clear decimal bit")] 
-    #[test_case(op::CLI, StatusFlag::Interrupt; "clear interrupt bit")] 
+    #[test_case(op::CLI, StatusFlag::InterruptDisable; "clear interrupt bit")] 
     #[test_case(op::CLV, StatusFlag::Overflow; "clear overflow bit")] 
     fn clear_codes(op_code: u8, status_bit: StatusFlag) {
         let mut memory = [op_code];
@@ -1149,7 +1186,7 @@ mod direct_instruction_tests {
 
     
     #[test_case(op::SEC, StatusFlag::Carry; "set carry bit")]
-    #[test_case(op::SEI, StatusFlag::Interrupt; "set interrupt bit")] 
+    #[test_case(op::SEI, StatusFlag::InterruptDisable; "set interrupt bit")] 
     fn set_codes(op_code: u8, status_bit: StatusFlag) {
         let mut memory = [op_code];
         let mut cpu = Cpu::new();
@@ -1205,11 +1242,11 @@ mod operation_tests {
     use crate::cpu::{Cpu, StatusFlag, op_codes::{self as op}};
     use test_case::test_case;
 
-    #[test_case(0b0001_1010, StatusFlag::Zero as u8; "Bit test zero")]
-    #[test_case(0b0101_0101, StatusFlag::Overflow as u8; "Bit test overflow")]
+    #[test_case(0b0001_1010, StatusFlag::Zero as u8 | StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "Bit test zero")]
+    #[test_case(0b0101_0101, StatusFlag::Overflow as u8 | StatusFlag::Negative as u8; "Bit test overflow")]
     #[test_case(0b1101_0101, StatusFlag::Overflow as u8 | StatusFlag::Negative as u8; "Bit test overflow and negative")]
-    #[test_case(0b1001_0101, StatusFlag::Negative as u8; "Bit test negative")]
-    #[test_case(0b0001_1111, 0; "Bit test nothing")]
+    #[test_case(0b1001_0101, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "Bit test negative")]
+    #[test_case(0b0001_1111, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "Bit test nothing")]
     fn bit_test(accumulator: u8, expected_flags: u8) {
         let mut memory = [op::BIT_ZER, 0x02, 0b1110_0101];
         let mut cpu = Cpu::new();
@@ -1506,7 +1543,7 @@ mod operation_tests {
         cpu.register_a = a;
         cpu.set_status(StatusFlag::Decimal, false);
         cpu.set_status(StatusFlag::Carry, c);
-
+        
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, expected_a);
         assert_eq!(cpu.status, expected_status);
@@ -1533,7 +1570,7 @@ mod operation_tests {
         cpu.register_a = a;
         cpu.set_status(StatusFlag::Decimal, true);
         cpu.set_status(StatusFlag::Carry, c);
-
+        
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, expected_a);
         assert_eq!(cpu.status, expected_status | StatusFlag::Decimal as u8);
@@ -1683,7 +1720,7 @@ mod jump_tests {
         assert_eq!(cpu.next_op(&mut memory).unwrap(), 7, "Operation cycles");
         assert_eq!(cpu.program_counter, 0xCDAB, "PC after BRK");
         assert_eq!(cpu.stack_pointer, 0xFA, "Stack pointer after BRK");
-        assert_eq!(cpu.status, StatusFlag::Overflow as u8 | StatusFlag::Zero as u8, "Current status");
+        assert_eq!(cpu.status, StatusFlag::Overflow as u8 | StatusFlag::Zero as u8 | StatusFlag::InterruptDisable as u8, "Current status");
         assert_eq!(memory[0x01FB], StatusFlag::Overflow as u8 | StatusFlag::Zero as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8, "Status on stack");
         assert_eq!(memory[0x01FC], 0x02, "pc low on stack");
         assert_eq!(memory[0x01FD], 0x80, "pc high on stack");
@@ -1968,16 +2005,12 @@ mod address_modes_tests {
     #[test]
     fn test_indirect_page_wrap_around() {
         let mut mem = [0; 0x0200];
-        mem[0x0000] = 0x01;
         mem[0x00FF] = 0x05;
-        mem[0x0100] = 0xAB;
+        mem[0x0100] = 0x01;
         mem[0x0105] = 0xAA;
         mem[0x0106] = 0xBB;
         let mut cpu = Cpu::new();
         cpu.program_counter = 0x00FF;
-
-        // With the page wrapping bug of indirect, the indirect address should be 0x0105, and not 0xAB05 (this would panic)
-        // At 0x0105, we will get 0xBBAA
 
         assert_eq!(cpu.get_address(AddressMode::Indirect, &mem), 0xBBAA.into());
         assert_eq!(cpu.program_counter, 0x0101);
@@ -2038,16 +2071,5 @@ mod address_result_tests {
         let result: AddressResult = address.into();
         assert_eq!(result.address, address);
         assert_eq!(result.page_crossed, false);
-    }
-}
-
-#[cfg(test)]
-impl<const N: usize> Bus<u16> for [u8; N] {
-    fn read_byte(&self, address: u16) -> u8 {
-        self[address as usize]
-    }
-
-    fn write_byte(&mut self, address: u16, value: u8) {
-        self[address as usize] = value;
     }
 }

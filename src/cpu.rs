@@ -1,23 +1,8 @@
-use std::fmt::Display;
-#[allow(unused_imports)]
-use std::io::Write;
-
-use crate::bus::Bus;
 /**
  * https://6502.org/users/obelisk/6502/reference.html
  */
 
- #[allow(unused_macros)]
-macro_rules! log_println {
-    ($($arg:tt)*) => {{
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("output.log")
-            .unwrap();
-        writeln!(file, $($arg)*).unwrap();
-    }};
-}
+ use crate::{address::{AddressMode}, bus::Bus, instructions::{INSTRUCTION_SET, Instruction}};
 
 #[repr(u8)]
 #[derive(Clone, Copy)]
@@ -30,273 +15,6 @@ enum StatusFlag {
     InterruptDisable = 0x04,
     Zero =      0x02,
     Carry =     0x01,
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum AddressMode {
-    Accumulator,
-
-    Implied,
-    Immediate,
-
-    ZeroPage, ZeroPageX, ZeroPageY,
-    Absolute, AbsoluteX, AbsoluteY,
-    Indirect, IndirectX, IndirectY,
-
-    Relative
-}
-
-impl Display for AddressMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Mnemonic {
-    ADC, AND, ASL, BCC, BCS, BEQ, BIT, BMI, BNE, BPL, BRK, BVC, BVS, CLC,
-    CLD, CLI, CLV, CMP, CPX, CPY, DEC, DEX, DEY, EOR, INC, INX, INY, JMP,
-    JSR, LDA, LDX, LDY, LSR, NOP, ORA, PHA, PHP, PLA, PLP, ROL, ROR, RTI,
-    RTS, SBC, SEC, SED, SEI, STA, STX, STY, TAX, TAY, TSX, TXA, TXS, TYA
-}
-
-impl Display for Mnemonic {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Instruction {
-    address_mode: AddressMode,
-    mnemonic: Mnemonic,
-    cycles: u8,
-    can_cross_page: bool
-}
-
-#[derive(Debug, PartialEq)]
-struct AddressResult
-{
-    address: u16,
-    page_crossed: bool
-}
-
-impl From<u16> for AddressResult {
-    fn from(value: u16) -> Self {
-        Self {
-            address: value,
-            page_crossed: false
-        }
-    }
-}
-
-macro_rules! instructions {
-    ($( $name:ident : $code:expr => ($mnemenic:ident, $addr:ident, $cycles:expr, $cross:expr) ),* $(,)?) => {
-        pub mod op_codes {
-            $(
-                pub const $name: u8 = $code;
-            )*
-        }
-
-        static INSTRUCTION_SET: [Option<Instruction>; 0x100] = {
-            let mut table: [Option<Instruction>; 0x100] = [None; 0x100];
-            $(
-                table[op_codes::$name as usize] =
-                    Some(Instruction {
-                        address_mode: AddressMode::$addr,
-                        mnemonic: Mnemonic::$mnemenic,
-                        cycles: $cycles,
-                        can_cross_page: $cross
-                    });
-            )*
-            table
-        };
-    };
-}
-
-instructions!{
-    BRK:     0x00 => (BRK, Implied,     7, false),
-    NOP:     0xEA => (NOP, Implied,     2, false),
-    CLC:     0x18 => (CLC, Implied,     2, false),
-    CLD:     0xD8 => (CLD, Implied,     2, false),
-    CLI:     0x58 => (CLI, Implied,     2, false),
-    CLV:     0xB8 => (CLV, Implied,     2, false),
-
-    INC_ZER: 0xE6 => (INC, ZeroPage,    5, false),
-    INC_ZEX: 0xF6 => (INC, ZeroPageX,   6, false),
-    INC_ABS: 0xEE => (INC, Absolute,    6, false),
-    INC_ABX: 0xFE => (INC, AbsoluteX,   7, false),
-
-    INX:     0xE8 => (INX, Implied,     2, false),
-    INY:     0xC8 => (INY, Implied,     2, false),
-
-    LDX_IMM: 0xA2 => (LDX, Immediate,   2, false),
-    LDX_ZER: 0xA6 => (LDX, ZeroPage,    3, false),
-    LDX_ZEY: 0xB6 => (LDX, ZeroPageY,   4, false),
-    LDX_ABS: 0xAE => (LDX, Absolute,    4, false),
-    LDX_ABY: 0xBE => (LDX, AbsoluteY,   4, true),
-    
-    LDY_IMM: 0xA0 => (LDY, Immediate,   2, false),
-    LDY_ZER: 0xA4 => (LDY, ZeroPage,    3, false),
-    LDY_ZEX: 0xB4 => (LDY, ZeroPageX,   4, false),
-    LDY_ABS: 0xAC => (LDY, Absolute,    4, false),
-    LDY_ABX: 0xBC => (LDY, AbsoluteX,   4, true),
-    
-    LDA_IMM: 0xA9 => (LDA, Immediate,   2, false),
-    LDA_ZER: 0xA5 => (LDA, ZeroPage,    3, false),
-    LDA_ZEX: 0xB5 => (LDA, ZeroPageX,   4, false),
-    LDA_ABS: 0xAD => (LDA, Absolute,    4, false),
-    LDA_ABX: 0xBD => (LDA, AbsoluteX,   4, true),
-    LDA_ABY: 0xB9 => (LDA, AbsoluteY,   4, true),
-    LDA_INX: 0xA1 => (LDA, IndirectX,   6, false),
-    LDA_INY: 0xB1 => (LDA, IndirectY,   5, true),
-    
-    ADC_IMM: 0x69 => (ADC, Immediate,   2, false),
-    ADC_ZER: 0x65 => (ADC, ZeroPage,    3, false),
-    ADC_ZEX: 0x75 => (ADC, ZeroPageX,   4, false),
-    ADC_ABS: 0x6D => (ADC, Absolute,    4, false),
-    ADC_ABX: 0x7D => (ADC, AbsoluteX,   4, true),
-    ADC_ABY: 0x79 => (ADC, AbsoluteY,   4, true),
-    ADC_INX: 0x61 => (ADC, IndirectX,   6, false),
-    ADC_INY: 0x71 => (ADC, IndirectY,   5, true),
-
-    AND_IMM: 0x29 => (AND, Immediate,   2, false),
-    AND_ZER: 0x25 => (AND, ZeroPage,    3, false),
-    AND_ZEX: 0x35 => (AND, ZeroPageX,   4, false),
-    AND_ABS: 0x2D => (AND, Absolute,    4, false),
-    AND_ABX: 0x3D => (AND, AbsoluteX,   4, true),
-    AND_ABY: 0x39 => (AND, AbsoluteY,   4, true),
-    AND_INX: 0x21 => (AND, IndirectX,   6, false),
-    AND_INY: 0x31 => (AND, IndirectY,   5, true),
-    
-    ASL_ACC: 0x0A => (ASL, Accumulator, 2, false),
-    ASL_ZER: 0x06 => (ASL, ZeroPage,    5, false),
-    ASL_ZEX: 0x16 => (ASL, ZeroPageX,   6, false),
-    ASL_ABS: 0x0E => (ASL, Absolute,    6, false),
-    ASL_ABX: 0x1E => (ASL, AbsoluteX,   7, false),
-    
-    BCC    : 0x90 => (BCC, Relative,    2, true),
-    BCS    : 0xB0 => (BCS, Relative,    2, true),
-    BEQ    : 0xF0 => (BEQ, Relative,    2, true),
-    BMI    : 0x30 => (BMI, Relative,    2, true),
-    BNE    : 0xD0 => (BNE, Relative,    2, true),
-    BPL    : 0x10 => (BPL, Relative,    2, true),
-    BVC    : 0x50 => (BVC, Relative,    2, true),
-    BVS    : 0x70 => (BVS, Relative,    2, true),
-
-    BIT_ZER: 0x24 => (BIT, ZeroPage,    3, false), 
-    BIT_ABS: 0x2C => (BIT, Absolute,    4, false),
-
-    CMP_IMM: 0xC9 => (CMP, Immediate,   2, false),
-    CMP_ZER: 0xC5 => (CMP, ZeroPage,    3, false),
-    CMP_ZEX: 0xD5 => (CMP, ZeroPageX,   4, false),
-    CMP_ABS: 0xCD => (CMP, Absolute,    4, false),
-    CMP_ABX: 0xDD => (CMP, AbsoluteX,   4, true),
-    CMP_ABY: 0xD9 => (CMP, AbsoluteY,   4, true),
-    CMP_INX: 0xC1 => (CMP, IndirectX,   6, false),
-    CMP_INY: 0xD1 => (CMP, IndirectY,   5, true),
-    
-    CPX_IMM: 0xE0 => (CPX, Immediate,   2, false),
-    CPX_ZER: 0xE4 => (CPX, ZeroPage,    3, false),
-    CPX_ABS: 0xEC => (CPX, Absolute,    4, false),
-    
-    CPY_IMM: 0xC0 => (CPY, Immediate,   2, false),
-    CPY_ZER: 0xC4 => (CPY, ZeroPage,    3, false),
-    CPY_ABS: 0xCC => (CPY, Absolute,    4, false),
-    
-    DEC_ZER: 0xC6 => (DEC, ZeroPage,    5, false),
-    DEC_ZEX: 0xD6 => (DEC, ZeroPageX,   6, false),
-    DEC_ABS: 0xCE => (DEC, Absolute,    6, false),
-    DEC_ABX: 0xDE => (DEC, AbsoluteX,   7, false),
-    
-    DEX:     0xCA => (DEX, Implied,     2, false),  
-    DEY:     0x88 => (DEY, Implied,     2, false), 
-    
-    EOR_IMM: 0x49 => (EOR, Immediate,   2, false),
-    EOR_ZER: 0x45 => (EOR, ZeroPage,    3, false),
-    EOR_ZEX: 0x55 => (EOR, ZeroPageX,   4, false),
-    EOR_ABS: 0x4D => (EOR, Absolute,    4, false),
-    EOR_ABX: 0x5D => (EOR, AbsoluteX,   4, true),
-    EOR_ABY: 0x59 => (EOR, AbsoluteY,   4, true),
-    EOR_INX: 0x41 => (EOR, IndirectX,   6, false),
-    EOR_INY: 0x51 => (EOR, IndirectY,   5, true),
-    
-    JMP_ABS: 0x4C => (JMP, Absolute,    3, false),
-    JMP_IND: 0x6C => (JMP, Indirect,    5, false),
-
-    JSR    : 0x20 => (JSR, Absolute,    6, false),
-
-    LSR_ACC: 0x4A => (LSR, Accumulator, 2, false), 
-    LSR_ZER: 0x46 => (LSR, ZeroPage,    5, false), 
-    LSR_ZEX: 0x56 => (LSR, ZeroPageX,   6, false), 
-    LSR_ABS: 0x4E => (LSR, Absolute,    6, false), 
-    LSR_ABX: 0x5E => (LSR, AbsoluteX,   7, false),
-
-    ORA_IMM: 0x09 => (ORA, Immediate,   2, false),
-    ORA_ZER: 0x05 => (ORA, ZeroPage,    3, false),
-    ORA_ZEX: 0x15 => (ORA, ZeroPageX,   4, false),
-    ORA_ABS: 0x0D => (ORA, Absolute,    4, false),
-    ORA_ABX: 0x1D => (ORA, AbsoluteX,   4, true), 
-    ORA_ABY: 0x19 => (ORA, AbsoluteY,   4, true), 
-    ORA_INX: 0x01 => (ORA, IndirectX,   6, false),
-    ORA_INY: 0x11 => (ORA, IndirectY,   5, true), 
-
-    PHA    : 0x48 => (PHA, Implied,     3, false),
-    PHP    : 0x08 => (PHP, Implied,     3, false),
-    PLA    : 0x68 => (PLA, Implied,     4, false),
-    PLP    : 0x28 => (PLP, Implied,     4, false),
-
-    ROL_ACC: 0x2A => (ROL, Accumulator, 2, false), 
-    ROL_ZER: 0x26 => (ROL, ZeroPage,    5, false), 
-    ROL_ZEX: 0x36 => (ROL, ZeroPageX,   6, false), 
-    ROL_ABS: 0x2E => (ROL, Absolute,    6, false), 
-    ROL_ABX: 0x3E => (ROL, AbsoluteX,   7, false),
-
-    ROR_ACC: 0x6A => (ROR, Accumulator, 2, false), 
-    ROR_ZER: 0x66 => (ROR, ZeroPage,    5, false), 
-    ROR_ZEX: 0x76 => (ROR, ZeroPageX,   6, false), 
-    ROR_ABS: 0x6E => (ROR, Absolute,    6, false), 
-    ROR_ABX: 0x7E => (ROR, AbsoluteX,   7, false),
-
-    RTI    : 0x40 => (RTI, Implied,     6, false),
-    RTS    : 0x60 => (RTS, Implied,     6, false),
-
-    SBC_IMM: 0xE9 => (SBC, Immediate,	2, false), 
-    SBC_ZER: 0xE5 => (SBC, ZeroPage,	3, false), 
-    SBC_ZEX: 0xF5 => (SBC, ZeroPageX,	4, false), 
-    SBC_ABS: 0xED => (SBC, Absolute,	4, false), 
-    SBC_ABX: 0xFD => (SBC, AbsoluteX,	4, true),
-    SBC_ABY: 0xF9 => (SBC, AbsoluteY,	4, true),
-    SBC_INX: 0xE1 => (SBC, IndirectX,	6, false),
-    SBC_INY: 0xF1 => (SBC, IndirectY,	5, true),
-    
-    SEC    : 0x38 => (SEC, Implied,     2, false),
-    SED    : 0xF8 => (SED, Implied,     2, false),
-    SEI    : 0x78 => (SEI, Implied,     2, false),
-
-    STA_ZER: 0x85 => (STA, ZeroPage,    3, false),
-    STA_ZEX: 0x95 => (STA, ZeroPageX,   4, false),
-    STA_ABS: 0x8D => (STA, Absolute,    4, false),
-    STA_ABX: 0x9D => (STA, AbsoluteX,   5, false),
-    STA_ABY: 0x99 => (STA, AbsoluteY,   5, false),
-    STA_INX: 0x81 => (STA, IndirectX,   6, false),
-    STA_INY: 0x91 => (STA, IndirectY,   6, false),
-
-    STX_ZER: 0x86 => (STX, ZeroPage,    3, false),
-    STX_ZEY: 0x96 => (STX, ZeroPageY,   4, false),
-    STX_ABS: 0x8E => (STX, Absolute,    4, false),
-
-    STY_ZER: 0x84 => (STY, ZeroPage,    3, false), 
-    STY_ZEX: 0x94 => (STY, ZeroPageX,   4, false), 
-    STY_ABS: 0x8C => (STY, Absolute,    4, false),
-
-    TAX    : 0xAA => (TAX, Implied,     2, false),
-    TAY    : 0xA8 => (TAY, Implied,     2, false),
-    TSX    : 0xBA => (TSX, Implied,     2, false),
-    TXA    : 0x8A => (TXA, Implied,     2, false),
-    TXS    : 0x9A => (TXS, Implied,     2, false),
-    TYA    : 0x98 => (TYA, Implied,     2, false),
-
 }
 
 pub struct Cpu {
@@ -334,27 +52,24 @@ impl Cpu {
         self.status = 0;
     }
 
-    pub fn next_op(&mut self, bus: &mut impl Bus<u16>) -> Result<u8, String> {
-        // let pc = self.program_counter;
+    pub fn run_step(&mut self, bus: &mut impl Bus<u16>) -> Result<u8, String> {
         let next_instruction = bus.read_byte(self.program_counter);
         self.program_counter += 1;
 
         match &INSTRUCTION_SET[next_instruction as usize] {
             Some(instruction) => {
-                let return_val =  Ok(self.execute_op(instruction, bus));
-                // println!("0x{:04X} {} {}  A={:02X} X={:02X} Y={:02X} SP={:02X} P={:08b}", pc, instruction.mnemonic, instruction.address_mode, self.register_a, self.register_x, self.register_y, self.stack_pointer, self.status);
-                return return_val;
+                Ok(self.execute_instruction(instruction, bus))
             },
             None => {
-                return Err(format!("Operation {:02X} not supported", next_instruction))
+                Err(format!("Operation {:02X} not supported", next_instruction))
             }
         }
     }
 
-    fn execute_op(&mut self, instruction: &Instruction, bus: &mut impl Bus<u16>) -> u8 {
-        use Mnemonic::*;
+    fn execute_instruction(&mut self, instruction: &Instruction, bus: &mut impl Bus<u16>) -> u8 {
+        use crate::instructions::Mnemonic::*;
         let mut branch_taken: bool = false;
-        let address_result = self.get_address(instruction.address_mode, bus);
+        let address_result = instruction.address_mode.get_address(self, bus);
         match instruction.mnemonic {
             ADC => { 
                 let a = self.register_a as u16;
@@ -450,7 +165,7 @@ impl Cpu {
                 self.push_stack(bus, (self.program_counter & 0xFF) as u8);
                 let status = self.status | StatusFlag::Unused as u8 | StatusFlag::Break as u8;
                 self.push_stack(bus, status);
-                self.program_counter = Cpu::read_word_little_endian(bus, 0xFFFE);
+                self.program_counter = bus.read_word_little_endian(0xFFFE);
                 self.status |= StatusFlag::InterruptDisable as u8;
             }
             BVC => {
@@ -694,109 +409,6 @@ impl Cpu {
         new_value
     }
 
-    fn get_address(&mut self, mode: AddressMode, bus: &impl Bus<u16>) -> AddressResult {
-        match mode {
-            AddressMode::Accumulator => { 0u16.into() }
-            AddressMode::Implied => { 0u16.into() },
-            AddressMode::Immediate => {
-                let address = self.program_counter;
-                self.program_counter += 1;
-                address.into()
-            },
-            AddressMode::ZeroPage => {
-                let address = bus.read_byte(self.program_counter) as u16;
-                self.program_counter += 1;
-                address.into()
-            },
-            AddressMode::ZeroPageX => {
-                let mut address = bus.read_byte(self.program_counter) as u16;
-                self.program_counter += 1;
-                address += self.register_x as u16;
-                return (address & 0xFF).into(); // Masked; 0x0080 + 0x00FF = 0x007F (and not 0x017F)
-            }, 
-            AddressMode::ZeroPageY => {
-                let mut address = bus.read_byte(self.program_counter) as u16;
-                self.program_counter += 1;
-                address += self.register_y as u16;
-                (address & 0xFF).into() // Masked; 0x0080 + 0x00FF = 0x007F (and not 0x017F)
-            },
-            AddressMode::Absolute => { self.fetch_word_at_pc(bus).into() },
-            AddressMode::AbsoluteX => {
-                let address = self.fetch_word_at_pc(bus);
-                let address_offset_x = address.wrapping_add(self.register_x as u16);
-                AddressResult {
-                    address: address_offset_x,
-                    page_crossed: address & 0xFF00 != address_offset_x & 0xFF00
-                }
-            },
-            AddressMode::AbsoluteY => {
-                let address = self.fetch_word_at_pc(bus);
-                let address_offset_y = address.wrapping_add(self.register_y as u16);
-                AddressResult {
-                    address: address_offset_y,
-                    page_crossed: address & 0xFF00 != address_offset_y & 0xFF00
-                }
-            },
-            AddressMode::Indirect => {
-                let pointer = self.fetch_word_at_pc(bus);
-
-                // emulate bug in original 6502, where lsb 0xXXFF causes the msb to wrap around page, reading 0xXX00 instead of next page
-                let msb_address = if pointer & 0x00FF == 0x00FF { pointer & 0xFF00} else { pointer + 1};
-                let low = bus.read_byte(pointer) as u16; 
-                let high =  bus.read_byte(msb_address) as u16;
-                let address = high << 8 | low;
-                address.into()
-            },
-            AddressMode::IndirectX => {
-                let mut indirect_address = bus.read_byte(self.program_counter) as u16;
-                self.program_counter += 1;
-                indirect_address += self.register_x as u16;
-                indirect_address &= 0x00FF;
-                
-                let add_low = bus.read_byte(indirect_address) as u16;
-                let add_high = bus.read_byte(indirect_address.wrapping_add(1) & 0xFF) as u16;
-                (add_high << 8 | add_low).into()
-            },
-            AddressMode::IndirectY => {
-                let zero_page_address = bus.read_byte(self.program_counter) as u16;
-                self.program_counter += 1;
-
-                let low = bus.read_byte(zero_page_address) as u16;
-                let high = bus.read_byte(zero_page_address.wrapping_add(1) & 0x00FF) as u16;
-                let indirect_address = high << 8 | low;
-
-                let indirect_address_offset_y = indirect_address.wrapping_add(self.register_y as u16);
-                AddressResult { 
-                    address: indirect_address_offset_y, 
-                    page_crossed: indirect_address & 0xFF00 != indirect_address_offset_y & 0xFF00
-                }
-            },
-            AddressMode::Relative => {
-                let relative_value = bus.read_byte(self.program_counter);
-                self.program_counter += 1;
-
-                let address_offset = relative_value.cast_signed() as i16;
-                let address = self.program_counter.wrapping_add_signed(address_offset);
-                AddressResult { 
-                    address, 
-                    page_crossed: address & 0xFF00 != self.program_counter & 0xFF00 
-                }
-            }
-        }
-    }
-
-    fn fetch_word_at_pc(&mut self, bus: &impl Bus<u16>) -> u16 {
-        let address = Cpu::read_word_little_endian(bus, self.program_counter);
-        self.program_counter += 2;
-        address
-    }
-
-    fn read_word_little_endian(bus: &impl Bus<u16>, address: u16) -> u16 {
-        let low = bus.read_byte(address) as u16;
-        let high = bus.read_byte(address.wrapping_add(1)) as u16;
-        high << 8 | low
-    }
-
     fn push_stack(&mut self, bus: &mut impl Bus<u16>, value: u8) {
         let stack_address = 0x0100u16 + self.stack_pointer as u16;
         bus.write_byte(stack_address, value);
@@ -847,7 +459,7 @@ impl Cpu {
 #[cfg(test)]
 mod load_register_tests {
     use crate::cpu::{Cpu, StatusFlag};
-    use crate::cpu::op_codes::*;
+    use crate::instructions::op_codes::*;
     use test_case::test_case;
         
     #[test_case(LDA_IMM, 0x12, (0x12, 0xCD, 0xEF), 0; "load immediate accumulator")]
@@ -866,7 +478,7 @@ mod load_register_tests {
         let mut cpu = Cpu::new();
         (cpu.register_a, cpu.register_x, cpu.register_y) = (0xAB, 0xCD, 0xEF);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), expected_register_values);
         assert_eq!(cpu.program_counter, 2);
         assert_eq!(cpu.status, expected_status);
@@ -877,7 +489,7 @@ mod load_register_tests {
         let mut mem = [LDA_ZER, 0x05, NOP, NOP, BRK, 0x33];
         let mut cpu = Cpu::new();
         
-        assert_eq!(cpu.next_op(&mut mem).unwrap(), 3);
+        assert_eq!(cpu.run_step(&mut mem).unwrap(), 3);
         assert_eq!(cpu.register_a, 0x33);
         assert_eq!(cpu.program_counter, 2);
         assert_eq!(cpu.status, 0);
@@ -886,7 +498,8 @@ mod load_register_tests {
 
 #[cfg(test)]
 mod store_register_tests {
-    use crate::cpu::{Cpu, op_codes as op};
+    use crate::cpu::{Cpu};
+    use crate::instructions::op_codes as op;
     use test_case::test_case;
 
     #[test_case(op::STA_ZER, 0x11, 3; "store register accumulator zero page")]
@@ -901,7 +514,7 @@ mod store_register_tests {
         let mut cpu = Cpu::new();
         cpu.reset();
         (cpu.register_a, cpu.register_x, cpu.register_y) = register_values;
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), expected_cycles);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), expected_cycles);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), register_values);
         assert_eq!(memory, [instruction, 0x05, 0x00,op::NOP, op::NOP, expected_value]);
     }
@@ -909,7 +522,8 @@ mod store_register_tests {
 
 #[cfg(test)]
 mod transfer_register_tests {
-    use crate::cpu::{Cpu, StatusFlag, op_codes::*};
+    use crate::cpu::{Cpu, StatusFlag};
+    use crate::instructions::op_codes::*;
     use test_case::test_case;
     
     #[test_case(TAX, 0x5B, 0; "Transfer accumulator to X")]
@@ -921,7 +535,7 @@ mod transfer_register_tests {
         cpu.reset();
         (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (accumulator, 0x11, 0xCD, 0x1F);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2, "Operation cycles");
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (accumulator, accumulator, 0xCD, 0x1F), "CPU registers");
         assert_eq!(cpu.status, expected_status, "CPU status");
     }
@@ -935,7 +549,7 @@ mod transfer_register_tests {
         cpu.reset();
         (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (accumulator, 0x11, 0xCD, 0x1F);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2, "Operation cycles");
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (accumulator, 0x11, accumulator, 0x1F), "CPU registers");
         assert_eq!(cpu.status, expected_status, "CPU status");
     }
@@ -950,7 +564,7 @@ mod transfer_register_tests {
         cpu.reset();
         (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (0xAB, register_x, 0xCD, 0x1F);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2, "Operation cycles");
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (register_x, register_x, 0xCD, 0x1F), "CPU registers");
         assert_eq!(cpu.status, expected_status, "CPU status");
     }
@@ -965,7 +579,7 @@ mod transfer_register_tests {
         cpu.reset();
         (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (0xAB, 0xCD, register_y, 0x1F);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2, "Operation cycles");
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (register_y, 0xCD, register_y, 0x1F), "CPU registers");
         assert_eq!(cpu.status, expected_status, "CPU status");
     }
@@ -978,14 +592,14 @@ mod transfer_register_tests {
         cpu.status = 0x00;
         (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (0xAB, 0xFF, 0xCD, 0x1F);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (0xAB, 0xFF, 0xCD, 0xFF));
         assert_eq!(cpu.status, 0x00);
 
         cpu.register_x = 0x00;
         cpu.status = 0xFF;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (0xAB, 0x00, 0xCD, 0x00));
         assert_eq!(cpu.status, 0xFF);
     }
@@ -999,7 +613,7 @@ mod transfer_register_tests {
         cpu.reset();
         (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (0xAB, 0x11, 0xCD, stack_pointer);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2, "Operation cycles");
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (0xAB, stack_pointer, 0xCD, stack_pointer), "CPU registers");
         assert_eq!(cpu.status, expected_status, "CPU status");
     }
@@ -1007,7 +621,8 @@ mod transfer_register_tests {
 
 #[cfg(test)]
 mod increment_instruction_tests {
-    use crate::cpu::{Cpu, StatusFlag, op_codes as op};
+    use crate::cpu::{Cpu, StatusFlag};
+    use crate::instructions::op_codes as op;
 
     #[test]
     fn increment_register_x() {
@@ -1017,15 +632,15 @@ mod increment_instruction_tests {
         cpu.reset();
         (cpu.register_a, cpu.register_x, cpu.register_y) = (0xEE, 0xFE, 0xDF);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);        
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);        
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xFF, 0xDF));
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0x00, 0xDF));
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0x01, 0xDF));
         assert_eq!(cpu.status, 0);
     }
@@ -1039,11 +654,11 @@ mod increment_instruction_tests {
         cpu.reset();
         (cpu.register_a, cpu.register_x, cpu.register_y) = (0xEE, 0x01, 0xDF);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);        
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);        
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0x00, 0xDF));
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xFF, 0xDF));
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
     }
@@ -1057,15 +672,15 @@ mod increment_instruction_tests {
         cpu.reset();
         (cpu.register_a, cpu.register_x, cpu.register_y) = (0xEE, 0xAB, 0xFE);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);        
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);        
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xAB, 0xFF));
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xAB, 0x00));
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xAB, 0x01));
         assert_eq!(cpu.status, 0);
     }
@@ -1078,11 +693,11 @@ mod increment_instruction_tests {
         cpu.reset();
         (cpu.register_a, cpu.register_x, cpu.register_y) = (0xEE, 0xDF, 0x01);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);        
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);        
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xDF, 0x00));
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xDF, 0xFF));
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
     }
@@ -1093,19 +708,19 @@ mod increment_instruction_tests {
         let mut cpu = Cpu::new();
         cpu.reset();
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
         assert_eq!(memory, [op::INC_ZER, 0x02, 0xFF]);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
 
         cpu.reset();
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
         assert_eq!(memory, [op::INC_ZER, 0x02, 0x00]);
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
         
         cpu.reset();
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
         assert_eq!(memory, [op::INC_ZER, 0x02, 0x01]);
         assert_eq!(cpu.status, 0);
@@ -1118,7 +733,7 @@ mod increment_instruction_tests {
         cpu.reset();
         cpu.register_x = 0x02;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 6);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 6);
         assert_eq!(memory, [op::INC_ZEX, 0x02, op::NOP, op::NOP, 0xFF, op::NOP]);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
     }
@@ -1129,13 +744,13 @@ mod increment_instruction_tests {
         let mut cpu = Cpu::new();
         cpu.reset();
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
         assert_eq!(memory, [op::DEC_ZER, 0x02, 0x00]);
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
 
         cpu.reset();
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
         assert_eq!(memory, [op::DEC_ZER, 0x02, 0xFF]);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
@@ -1148,7 +763,7 @@ mod increment_instruction_tests {
         cpu.reset();
         cpu.register_x = 0x02;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 6);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 6);
         assert_eq!(memory, [op::DEC_ZEX, 0x02, op::NOP, op::NOP, 0xFD, op::NOP]);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
     }
@@ -1156,7 +771,8 @@ mod increment_instruction_tests {
 
 #[cfg(test)]
 mod direct_instruction_tests {
-    use crate::cpu::{Cpu, StatusFlag, op_codes::{self as op}};
+    use crate::cpu::{Cpu, StatusFlag};
+    use crate::instructions::op_codes as op;
     use test_case::test_case;
 
 
@@ -1170,17 +786,17 @@ mod direct_instruction_tests {
         let status_flag = status_bit as u8;
 
         cpu.reset();
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, 0);
 
         cpu.reset();
         cpu.status = status_flag;
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, 0);
 
         cpu.reset();
         cpu.status = 0xFF;
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, !status_flag);
     }
 
@@ -1193,17 +809,17 @@ mod direct_instruction_tests {
         let status_flag = status_bit as u8;
 
         cpu.reset();
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, status_flag);
 
         cpu.reset();
         cpu.status = status_flag;
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, status_flag);
 
         cpu.reset();
         cpu.status = 0xFF;
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, 0xFF);
     }
 
@@ -1215,7 +831,7 @@ mod direct_instruction_tests {
         cpu.reset();
         assert_eq!(cpu.is_set(StatusFlag::Decimal), false);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.is_set(StatusFlag::Decimal), true);
     }
 
@@ -1229,7 +845,7 @@ mod direct_instruction_tests {
 
         let previous_state = (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer, cpu.status);
         for _ in 0..N {
-            cycles += cpu.next_op(&mut mem).unwrap();
+            cycles += cpu.run_step(&mut mem).unwrap();
         }
         assert_eq!(cycles, 2 * N as u8, "cycles executed");
         assert_eq!(cpu.program_counter, N as u16, "current program counter");
@@ -1239,7 +855,8 @@ mod direct_instruction_tests {
 
 #[cfg(test)]
 mod operation_tests {
-    use crate::cpu::{Cpu, StatusFlag, op_codes::{self as op}};
+    use crate::cpu::{Cpu, StatusFlag};
+    use crate::instructions::op_codes as op;
     use test_case::test_case;
 
     #[test_case(0b0001_1010, StatusFlag::Zero as u8 | StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "Bit test zero")]
@@ -1253,7 +870,7 @@ mod operation_tests {
         cpu.reset();
 
         (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (accumulator, 0x11, 0xCD, 0x1F);
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 3, "Operation cycles");
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (accumulator, 0x11, 0xCD, 0x1F), "Register values");
         assert_eq!(cpu.status, expected_flags, "CPU Flags");
     }
@@ -1270,7 +887,7 @@ mod operation_tests {
         cpu.reset();
         cpu.register_a = accumulator_before;
         
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2, "Operation cycles");
         assert_eq!(cpu.register_a, expected_after, "Accumulator");
         assert_eq!(cpu.program_counter, 1, "Program counter");
         assert_eq!(cpu.status, expected_status, "CPU status");
@@ -1287,7 +904,7 @@ mod operation_tests {
         let mut cpu = Cpu::new();
         cpu.reset();
         
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 5, "Operation cycles");
         assert_eq!(memory[0x02], expected_after, "Memory value");
         assert_eq!(cpu.program_counter, 2, "Program counter");
         assert_eq!(cpu.status, expected_status, "CPU status");
@@ -1305,7 +922,7 @@ mod operation_tests {
         cpu.set_status(StatusFlag::Negative, true);
         cpu.register_a = before;
         
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2, "Operation cycles");
         assert_eq!(cpu.register_a, expected_after, "Accumulator");
         assert_eq!(cpu.program_counter, 1, "Program counter");
         assert_eq!(cpu.status, expected_status, "CPU status flags");
@@ -1321,7 +938,7 @@ mod operation_tests {
         cpu.reset();
         cpu.set_status(StatusFlag::Negative, true);
         
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 5, "Operation cycles");
         assert_eq!(memory[0x02], expected_after, "Memory value");
         assert_eq!(cpu.program_counter, 2, "Program counter");
         assert_eq!(cpu.status, expected_status, "CPU status");
@@ -1340,7 +957,7 @@ mod operation_tests {
         cpu.set_status(StatusFlag::Negative, true);
         cpu.register_a = accumulator_before;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2, "Operation cycles");
         assert_eq!(cpu.register_a, expected_result, "Accumulator");
         assert_eq!(cpu.status, expected_status, "CPU status flags");
     }
@@ -1358,7 +975,7 @@ mod operation_tests {
         cpu.set_status(StatusFlag::Carry, carry_bit);
         cpu.register_a = accumulator_before;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2, "Operation cycles");
         assert_eq!(cpu.register_a, expected_value, "Accumulator");
         assert_eq!(cpu.status, expected_status, "CPU status flags");
     }
@@ -1376,7 +993,7 @@ mod operation_tests {
         cpu.set_status(StatusFlag::Carry, carry_bit);
         cpu.register_a = 0xAB;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 5, "Operation cycles");
         assert_eq!(memory[2], expected_value, "Memory value");
         assert_eq!(cpu.status, expected_status, "CPU status flags");
         assert_eq!(cpu.register_a, 0xAB);
@@ -1396,7 +1013,7 @@ mod operation_tests {
         cpu.set_status(StatusFlag::Carry, carry_bit);
         cpu.register_a = accumulator_before;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2, "Operation cycles");
         assert_eq!(cpu.register_a, expected_value, "Accumulator");
         assert_eq!(cpu.status, expected_status, "CPU status flags");
     }
@@ -1415,7 +1032,7 @@ mod operation_tests {
         cpu.set_status(StatusFlag::Carry, carry_bit);
         cpu.register_a = 0xAB;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 5, "Operation cycles");
         assert_eq!(memory[2], expected_value, "Memory value");
         assert_eq!(cpu.status, expected_status, "CPU status flags");
         assert_eq!(cpu.register_a, 0xAB, "Accumulator");
@@ -1432,19 +1049,19 @@ mod operation_tests {
         cpu.reset();
         cpu.register_a = 0xFF;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 0b_1010_1010);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.register_a, 0b_1000_0010);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.register_a, 0b_0000_0010);
         assert_eq!(cpu.status, 0);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 0b_0000_0000);
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
     }
@@ -1458,13 +1075,13 @@ mod operation_tests {
         cpu.reset();
         (cpu.register_a, cpu.register_x, cpu.register_y) = register_values;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, StatusFlag::Zero as u8 | StatusFlag::Carry as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, StatusFlag::Carry as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
     }
 
@@ -1481,19 +1098,19 @@ mod operation_tests {
         let mut cpu = Cpu::new();
         cpu.register_a = 0b0100_0010;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 0b1000_1000);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.register_a, 0b1101_0010);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.register_a, 0b0111_1101);
         assert_eq!(cpu.status, 0);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 0);
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
     }
@@ -1519,7 +1136,7 @@ mod operation_tests {
         cpu.set_status(StatusFlag::Decimal, false);
         cpu.set_status(StatusFlag::Carry, c);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, expected_a);
         assert_eq!(cpu.status, expected_status);
     }
@@ -1544,7 +1161,7 @@ mod operation_tests {
         cpu.set_status(StatusFlag::Decimal, false);
         cpu.set_status(StatusFlag::Carry, c);
         
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, expected_a);
         assert_eq!(cpu.status, expected_status);
     }
@@ -1571,7 +1188,7 @@ mod operation_tests {
         cpu.set_status(StatusFlag::Decimal, true);
         cpu.set_status(StatusFlag::Carry, c);
         
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, expected_a);
         assert_eq!(cpu.status, expected_status | StatusFlag::Decimal as u8);
     }
@@ -1601,7 +1218,7 @@ mod operation_tests {
         cpu.set_status(StatusFlag::Decimal, true);
         cpu.set_status(StatusFlag::Carry, c);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, expected_a);
         assert_eq!(cpu.status, expected_status | StatusFlag::Decimal as u8);
     }
@@ -1610,7 +1227,8 @@ mod operation_tests {
 
 #[cfg(test)]
 mod jump_tests {
-    use crate::{bus::MEMORY_SIZE, cpu::{Cpu, StatusFlag, op_codes::{self as op, BRK}}};
+    use crate::{bus::MEMORY_SIZE, cpu::{Cpu, StatusFlag}};
+    use crate::instructions::op_codes as op;
     use test_case::test_case;
 
     #[test]
@@ -1623,7 +1241,7 @@ mod jump_tests {
             op::NOP, op::NOP];
         let mut cpu = Cpu::new();
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!(cpu.register_a, 0);
         assert_eq!(cpu.program_counter, 0xCDAB);
         assert_eq!(cpu.status, 0);
@@ -1639,7 +1257,7 @@ mod jump_tests {
             op::NOP, op::NOP];
         let mut cpu = Cpu::new();
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.register_a, 0);
         assert_eq!(cpu.program_counter, 0x0005);
         assert_eq!(cpu.status, 0);
@@ -1656,9 +1274,9 @@ mod jump_tests {
             0xAB, 0xEF];
         let mut cpu = Cpu::new();
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.program_counter, 0x0005);
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 5);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!(cpu.program_counter, 0xEFAB);
     }
 
@@ -1675,7 +1293,7 @@ mod jump_tests {
         cpu.program_counter = pc;
         assert_eq!(cpu.stack_pointer, 0xFD);        
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 6, "Op cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 6, "Op cycles");
         assert_eq!(cpu.stack_pointer, 0xFB, "Stack pointer"); 
         assert_eq!(cpu.program_counter, 0xCDAB, "Program counter");
         assert_eq!(memory[0x01FD], pc_high, "Memory 0xFD"); // pc high = 0
@@ -1699,7 +1317,7 @@ mod jump_tests {
         cpu.program_counter = 0x02AB;
         cpu.stack_pointer = 0xA9;       
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 6, "Op cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 6, "Op cycles");
         assert_eq!(cpu.stack_pointer, 0xAB, "Stack pointer"); 
         assert_eq!(cpu.program_counter, expected_pc, "Program counter");
     }
@@ -1707,7 +1325,7 @@ mod jump_tests {
     #[test]
     fn brk() {
         let mut memory = [0; MEMORY_SIZE];
-        memory[0x8000] = BRK;
+        memory[0x8000] = op::BRK;
         memory[0xFFFE] = 0xAB;
         memory[0xFFFF] = 0xCD;
 
@@ -1717,7 +1335,7 @@ mod jump_tests {
         cpu.status = StatusFlag::Overflow as u8 | StatusFlag::Zero as u8;
         assert_eq!(cpu.stack_pointer, 0xFD, "Stack pointer before");
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 7, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 7, "Operation cycles");
         assert_eq!(cpu.program_counter, 0xCDAB, "PC after BRK");
         assert_eq!(cpu.stack_pointer, 0xFA, "Stack pointer after BRK");
         assert_eq!(cpu.status, StatusFlag::Overflow as u8 | StatusFlag::Zero as u8 | StatusFlag::InterruptDisable as u8, "Current status");
@@ -1743,7 +1361,7 @@ mod jump_tests {
         cpu.status = StatusFlag::Negative as u8;
         cpu.stack_pointer = 0xFA;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 6, "Operation cycles");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 6, "Operation cycles");
         assert_eq!(cpu.program_counter, 0x8002, "PC after RTI");
         assert_eq!(cpu.stack_pointer, 0xFD, "Stack pointer after RTI");
         assert_eq!(cpu.status, StatusFlag::Overflow as u8 | StatusFlag::Zero as u8 | StatusFlag::Unused as u8, "Current status");
@@ -1752,7 +1370,8 @@ mod jump_tests {
 
 #[cfg(test)]
 mod stack_tests {
-    use crate::cpu::{Cpu, StatusFlag, op_codes as op};
+    use crate::cpu::{Cpu, StatusFlag};
+    use crate::instructions::op_codes as op;
 
     #[test]
     fn push_accumulator_stack() {
@@ -1765,14 +1384,14 @@ mod stack_tests {
         memory[0x01] = op::PHA;
 
         cpu.register_a = 0xAB;
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.stack_pointer, 0xFC);
         assert_eq!(memory[0x01FD], 0xAB);
         assert_eq!(cpu.register_a, 0xAB);
         assert_eq!(cpu.status, 0);
 
         cpu.register_a = 0xCD;
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.stack_pointer, 0xFB);
         assert_eq!(memory[0x01FC], 0xCD);
         assert_eq!(memory[0x01FD], 0xAB);
@@ -1791,13 +1410,13 @@ mod stack_tests {
         memory[0x01] = op::PHP;
 
         cpu.status = StatusFlag::Carry as u8 | StatusFlag::Overflow as u8;
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.stack_pointer, 0xFC);
         assert_eq!(memory[0x01FD], StatusFlag::Carry as u8 | StatusFlag::Overflow as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8);
         assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8);
 
         cpu.status = 0;
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.stack_pointer, 0xFB);
         assert_eq!(memory[0x01FD], StatusFlag::Carry as u8 | StatusFlag::Overflow as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8);
         assert_eq!(memory[0x01FC], StatusFlag::Break as u8 | StatusFlag::Unused as u8);
@@ -1821,17 +1440,17 @@ mod stack_tests {
         assert_eq!(cpu.stack_pointer, 0xFD);
         cpu.stack_pointer = 0xFA;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.register_a, 0);
         assert_eq!(cpu.stack_pointer, 0xFB);
         assert_eq!(cpu.status, StatusFlag::Zero as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.register_a, 0b1000_0000);
         assert_eq!(cpu.stack_pointer, 0xFC);
         assert_eq!(cpu.status, StatusFlag::Negative as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.register_a, 0b0101_0101);
         assert_eq!(cpu.stack_pointer, 0xFD);
         assert_eq!(cpu.status, 0);
@@ -1855,15 +1474,15 @@ mod stack_tests {
         assert_eq!(cpu.stack_pointer, 0xFD);
         cpu.stack_pointer = 0xFA;
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.stack_pointer, 0xFB);
         assert_eq!(cpu.status, StatusFlag::Negative as u8 | StatusFlag::Unused as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.stack_pointer, 0xFC);
         assert_eq!(cpu.status, StatusFlag::Unused as u8);
 
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4);
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.stack_pointer, 0xFD);
         assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Decimal as u8 | StatusFlag::Unused as u8);
     }
@@ -1871,7 +1490,8 @@ mod stack_tests {
 
 #[cfg(test)]
 mod branch_tests {
-    use crate::cpu::{Cpu, StatusFlag, op_codes::*};
+    use crate::cpu::{Cpu, StatusFlag};
+    use crate::instructions::op_codes::*;
     use test_case::test_case;
 
     #[test_case(BCS, StatusFlag::Carry, true; "Branch if carry set")]
@@ -1893,183 +1513,17 @@ mod branch_tests {
         cpu.set_status(flag_condition, value_condition);
 
         // Branch taken, no page jump
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 3, "Op cycles, branch taken, no jump");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 3, "Op cycles, branch taken, no jump");
         assert_eq!(cpu.program_counter, 0x07, "Program counter, branch taken, no jump");
 
         // Branch not taken
         cpu.set_status(flag_condition, !value_condition);
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 2, "Op cycles, branch not taken");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2, "Op cycles, branch not taken");
         assert_eq!(cpu.program_counter, 0x09, "Program counter, branch not taken");
 
         // Branch taken with page jump
         cpu.set_status(flag_condition, value_condition);
-        assert_eq!(cpu.next_op(&mut memory).unwrap(), 4, "Op cycles, branch taken, page jump");
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 4, "Op cycles, branch taken, page jump");
         assert_eq!(cpu.program_counter, 0xFFF0, "Program counter, branch taken, page jump");
-    }
-}
-
-#[cfg(test)]
-mod address_modes_tests {
-    use crate::cpu::{Cpu, op_codes as op, AddressMode, AddressResult};
-    use test_case::test_case;
-
-    #[test_case(0; "immediate_1")]
-    #[test_case(1; "immediate_2")]
-    fn test_modes(pc: u16) {
-        let mem = [op::LDA_IMM, 0x05];
-        let mut cpu = Cpu::new();
-        cpu.program_counter = pc;
-        assert_eq!(cpu.get_address(AddressMode::Immediate, &mem), pc.into());
-    }
-    
-    #[test_case(0 => AddressResult::from(op::LDA_IMM as u16); "zero page 1")]
-    #[test_case(1 => AddressResult::from(0x05u16); "zero page 2")]
-    fn test_zero_page(pc: u16) -> AddressResult {
-        let mem = [op::LDA_IMM, 0x05];
-        let mut cpu = Cpu::new();
-        cpu.program_counter = pc;
-        cpu.get_address(AddressMode::ZeroPage, &mem)
-    }
-
-
-    #[test]
-    fn test_zero_page_x() {
-        let mem = [0x36, 0xF0];
-        let mut cpu = Cpu::new();
-        cpu.program_counter = 0;
-        cpu.register_x = 0x15;
-        cpu.register_y = 0x53;
-        assert_eq!(cpu.get_address(AddressMode::ZeroPageX, &mem), 0x004B.into(), "add by x");
-        assert_eq!(cpu.get_address(AddressMode::ZeroPageX, &mem), 0x0005.into(), "add by x overflow");
-    }
-    
-    #[test]
-    fn test_zero_page_y() {
-        let mem = [0x36, 0xF0];
-        let mut cpu = Cpu::new();
-        cpu.program_counter = 0;
-        cpu.register_x = 0x15;
-        cpu.register_y = 0x53;
-        assert_eq!(cpu.get_address(AddressMode::ZeroPageY, &mem), 0x0089.into(), "add by y");
-        assert_eq!(cpu.get_address(AddressMode::ZeroPageY, &mem), 0x0043.into(), "add by y overflow");
-    }
-
-    
-    #[test]
-    fn test_absolute() {
-        let mem = [0x36, 0xF0, 0xEF, 0xAB];
-        let mut cpu = Cpu::new();
-        cpu.program_counter = 0;
-        cpu.register_x = 0x8E;
-        cpu.register_y = 0x8F;
-        assert_eq!(cpu.get_address(AddressMode::Absolute, &mem), 0xF036.into(), "absolute little endian 1");
-        assert_eq!(cpu.get_address(AddressMode::Absolute, &mem), 0xABEF.into(), "absolute little endian 2");
-    }
-
-    
-    #[test]
-    fn test_absolute_x() {
-        let mem = [0x36, 0xF0, 0xEF, 0xAB];
-        let mut cpu = Cpu::new();
-        cpu.program_counter = 0;
-        cpu.register_x = 0x8E;
-        cpu.register_y = 0x8F;
-        assert_eq!(cpu.get_address(AddressMode::AbsoluteX, &mem), AddressResult { address: 0xF0C4, page_crossed: false}, "absolute little endian 1");
-        assert_eq!(cpu.program_counter, 2);
-        assert_eq!(cpu.get_address(AddressMode::AbsoluteX, &mem), AddressResult { address: 0xAC7D, page_crossed: true}, "absolute little endian 2");
-        assert_eq!(cpu.program_counter, 4);
-    }
-
-    #[test]
-    fn test_absolute_y() {
-        let mem = [0x36, 0xF0, 0xEF, 0xAB];
-        let mut cpu = Cpu::new();
-        cpu.program_counter = 0;
-        cpu.register_x = 0x8E;
-        cpu.register_y = 0x8F;
-        assert_eq!(cpu.get_address(AddressMode::AbsoluteY, &mem), AddressResult { address: 0xF0C5, page_crossed: false}, "absolute little endian 1");
-        assert_eq!(cpu.program_counter, 2);
-        assert_eq!(cpu.get_address(AddressMode::AbsoluteY, &mem), AddressResult { address: 0xAC7E, page_crossed: true}, "absolute little endian 2");
-        assert_eq!(cpu.program_counter, 4);
-    }
-
-    #[test]
-    fn test_indirect() {
-        let mem = [0x08, 0x00, op::NOP, op::NOP, op::NOP, op::NOP, op::NOP, op::NOP, 0xAB, 0xCD];
-        let mut cpu = Cpu::new();
-        assert_eq!(cpu.get_address(AddressMode::Indirect, &mem), AddressResult { address: 0xCDAB, page_crossed: false});
-        assert_eq!(cpu.program_counter, 2);
-    }
-
-    
-    #[test]
-    fn test_indirect_page_wrap_around() {
-        let mut mem = [0; 0x0200];
-        mem[0x00FF] = 0x05;
-        mem[0x0100] = 0x01;
-        mem[0x0105] = 0xAA;
-        mem[0x0106] = 0xBB;
-        let mut cpu = Cpu::new();
-        cpu.program_counter = 0x00FF;
-
-        assert_eq!(cpu.get_address(AddressMode::Indirect, &mem), 0xBBAA.into());
-        assert_eq!(cpu.program_counter, 0x0101);
-    }
-
-    #[test_case(0x00, 0x02AB.into(); "zero x")]
-    #[test_case(0x10, 0x05EF.into(); "non zero x")]
-    #[test_case(0x7F, 0xCD80.into(); "boundary msb on wrap around")]
-    #[test_case(0x80, 0x1FCD.into(); "full zero page wrap around")]
-    fn indirect_x(reg_x: u8, address: AddressResult) {
-        let mut memory = [0u8; 0x0300];
-        memory[0x0080] = 0xAB;
-        memory[0x0081] = 0x02;
-        memory[0x0090] = 0xEF;
-        memory[0x0091] = 0x05;
-        memory[0x00FF] = 0x80;
-        memory[0x0000] = 0xCD;
-        memory[0x0001] = 0x1F;
-        memory[0x0200] = 0x80;
-        let mut cpu = Cpu::new();
-        cpu.program_counter = 0x0200;
-        cpu.register_x = reg_x;
-
-        assert_eq!(cpu.get_address(AddressMode::IndirectX, &memory), address);
-        assert_eq!(cpu.program_counter, 0x0201);
-        assert_eq!(cpu.register_x, reg_x);
-    }
-
-    #[test_case(0x00, 0x02AB.into(); "zero offset")]
-    #[test_case(0x10, 0x02BB.into(); "within page offset")]
-    #[test_case(0x54, 0x02FF.into(); "at the boundary, no page cross")]
-    #[test_case(0x55, AddressResult { address: 0x0300, page_crossed: true }; "over the boundary, page crossed")]
-    fn indirect_y(reg_y: u8, address: AddressResult) {
-        let mut memory = [0u8; 0x0300];
-        memory[0x0080] = 0xAB;
-        memory[0x0081] = 0x02;
-        memory[0x0200] = 0x80;
-        let mut cpu = Cpu::new();
-        cpu.program_counter = 0x0200;
-        cpu.register_y = reg_y;
-
-        assert_eq!(cpu.get_address(AddressMode::IndirectY, &memory), address);
-        assert_eq!(cpu.program_counter, 0x0201);
-        assert_eq!(cpu.register_y, reg_y);
-
-    }
-
-
-}
-
-#[cfg(test)]
-mod address_result_tests {
-    use crate::cpu::AddressResult;
-    
-    #[test]
-    fn into() {
-        let address: u16 = 0x12;
-        let result: AddressResult = address.into();
-        assert_eq!(result.address, address);
-        assert_eq!(result.page_crossed, false);
     }
 }

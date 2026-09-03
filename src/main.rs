@@ -1,10 +1,9 @@
-mod bus;
-mod cpu;
-
-use crate::cpu::Cpu;
+use oxidize6502::bus;
+use oxidize6502::cpu::Cpu;
 
 
 fn main() {
+    println!("Execute 6502 functional tests..");
     let mut memory = [0; bus::MEMORY_SIZE];
     load_binary(&mut memory, "tests\\6502_functional_test.bin", 0).unwrap();
     let mut cpu = Cpu::new();
@@ -15,9 +14,14 @@ fn main() {
     let mut previous_address: u16 = 0xFFFF; 
     let mut count = 0u8;
 
-    for i in 0..200_000
+    for _ in 0..100_000_000
     {
-        cpu.next_op(&mut memory).unwrap();
+        cpu.run_step(&mut memory).unwrap();
+
+        if cpu.program_counter == 0x3469 {
+            println!("SUCCESS");
+            break;
+        }
 
         if cpu.program_counter == previous_address {
             count += 1;
@@ -28,11 +32,6 @@ fn main() {
         } else {
             previous_address = cpu.program_counter;
             count = 0;
-        }
-
-        if i % 1000 == 0 {
-            println!("Instructions: {i} / 200_000");
-            println!("MEM[0x0200] = {}", memory[0x0200]);
         }
     }
 }

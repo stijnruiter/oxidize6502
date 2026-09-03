@@ -4,6 +4,7 @@ pub const MEMORY_SIZE: usize = 0xFFFF + 1;
 #[allow(dead_code)]
 pub trait Bus<T> {
     fn read_byte(&self, address: T) -> u8;
+    fn read_word_little_endian(&self, address: T) -> u16;
     fn write_byte(&mut self, address: T, value: u8);
 }
 
@@ -33,6 +34,10 @@ impl Bus<u16> for Memory {
         // TODO: range check
         self.data[address as usize] = value;
     }
+    
+    fn read_word_little_endian(&self, address: u16) -> u16 {
+        read_word_little_endian(self, address)
+    }
 }
 
 impl<const N: usize> Bus<u16> for [u8; N] {
@@ -43,4 +48,14 @@ impl<const N: usize> Bus<u16> for [u8; N] {
     fn write_byte(&mut self, address: u16, value: u8) {
         self[address as usize] = value;
     }
+    
+    fn read_word_little_endian(&self, address: u16) -> u16 {
+        read_word_little_endian(self, address)
+    }
+}
+
+fn read_word_little_endian(bus: &impl Bus<u16>, address: u16) -> u16 {
+    let low = bus.read_byte(address) as u16;
+    let high = bus.read_byte(address.wrapping_add(1)) as u16;
+    high << 8 | low
 }

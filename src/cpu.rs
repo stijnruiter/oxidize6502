@@ -4,17 +4,20 @@
 
  use crate::{address::{AddressMode}, bus::Bus, instructions::{INSTRUCTION_SET, Instruction}};
 
-#[repr(u8)]
-#[derive(Clone, Copy)]
-enum StatusFlag {
-    Negative =  0x80,
-    Overflow =  0x40,
-    Unused =    0x20, 
-    Break =     0x10,
-    Decimal =   0x08,
-    InterruptDisable = 0x04,
-    Zero =      0x02,
-    Carry =     0x01,
+use bitflags::bitflags;
+
+bitflags! {
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    pub struct StatusFlag: u8 {
+        const Negative =  0x80;
+        const Overflow =  0x40;
+        const Unused =    0x20;
+        const Break =     0x10;
+        const Decimal =   0x08;
+        const InterruptDisable = 0x04;
+        const Zero =      0x02;
+        const Carry =     0x01;
+    }
 }
 
 pub struct Cpu {
@@ -25,7 +28,7 @@ pub struct Cpu {
     pub program_counter: u16,
     pub stack_pointer: u8,
 
-    pub status: u8
+    pub status: StatusFlag
 }
 
 impl Cpu {
@@ -38,7 +41,7 @@ impl Cpu {
             program_counter: 0, 
             stack_pointer: 0, 
             
-            status: 0
+            status: StatusFlag::empty()
         }
     }
 
@@ -49,7 +52,7 @@ impl Cpu {
         
         self.program_counter = 0; 
         self.stack_pointer = 0xFD; 
-        self.status = 0;
+        self.status = StatusFlag::empty();
     }
 
     pub fn run_step(&mut self, bus: &mut impl Bus<u16>) -> Result<u8, String> {
@@ -163,10 +166,10 @@ impl Cpu {
                 self.program_counter += 1; // Discard next byte
                 self.push_stack(bus, (self.program_counter >> 8) as u8);
                 self.push_stack(bus, (self.program_counter & 0xFF) as u8);
-                let status = self.status | StatusFlag::Unused as u8 | StatusFlag::Break as u8;
-                self.push_stack(bus, status);
+                let status = self.status | StatusFlag::Unused | StatusFlag::Break;
+                self.push_stack(bus, status.bits());
                 self.program_counter = bus.read_word_little_endian(0xFFFE);
-                self.status |= StatusFlag::InterruptDisable as u8;
+                self.status |= StatusFlag::InterruptDisable;
             }
             BVC => {
                 if !self.is_set(StatusFlag::Overflow) {
@@ -235,17 +238,17 @@ impl Cpu {
              }, 
             PHA => { self.push_stack(bus, self.register_a); }, 
             PHP => { 
-                let status = self.status | StatusFlag::Unused as u8 | StatusFlag::Break as u8;
-                self.push_stack(bus, status); }, 
+                let status = self.status | StatusFlag::Unused | StatusFlag::Break;
+                self.push_stack(bus, status.bits()); }, 
             PLA => { 
                 self.register_a = self.pull_stack(bus);
                 self.set_status(StatusFlag::Zero, self.register_a == 0);
                 self.set_status(StatusFlag::Negative, self.register_a & 0x80 != 0);
             }, 
             PLP => { 
-                let status = self.pull_stack(bus);
+                let status = StatusFlag::from_bits_retain(self.pull_stack(bus));
                 // Discard Break, set unused high
-                self.status = status & !(StatusFlag::Break as u8) | StatusFlag::Unused as u8;
+                self.status = status & !StatusFlag::Break | StatusFlag::Unused;
             }, 
             ROL => {
                 if instruction.address_mode == AddressMode::Accumulator {
@@ -267,10 +270,10 @@ impl Cpu {
                     bus.write_byte(address_result.address, value);
                 }  }, 
             RTI => {
-                let status = self.pull_stack(bus);
+                let status = StatusFlag::from_bits_retain(self.pull_stack(bus));
                 let pc_low = self.pull_stack(bus) as u16;
                 let pc_high = self.pull_stack(bus) as u16;
-                self.status = (status & !(StatusFlag::Break as u8)) | StatusFlag::Unused as u8;
+                self.status = (status & !StatusFlag::Break) | StatusFlag::Unused;
                 self.program_counter = pc_high << 8 | pc_low;
             },
             RTS => { 
@@ -423,15 +426,14 @@ impl Cpu {
 
     fn set_status(&mut self, key: StatusFlag, value: bool) {
         if value {
-            self.status |= key as u8;
+            self.status |= key;
         } else {
-            self.status &= !(key as u8)
+            self.status &= !key
         }
     }
 
     fn is_set(&self, key: StatusFlag) -> bool {
-        let status_bit = key as u8;
-        self.status & status_bit == status_bit
+        self.status.contains(key)
     }
     
     fn increment_value(&mut self, value: u8) -> u8 {
@@ -462,18 +464,18 @@ mod load_register_tests {
     use crate::instructions::op_codes::*;
     use test_case::test_case;
         
-    #[test_case(LDA_IMM, 0x12, (0x12, 0xCD, 0xEF), 0; "load immediate accumulator")]
-    #[test_case(LDA_IMM, 0x85, (0x85, 0xCD, 0xEF), StatusFlag::Negative as u8; "load immediate accumulator negative")]
-    #[test_case(LDA_IMM, 0x00, (0x00, 0xCD, 0xEF), StatusFlag::Zero as u8; "load immediate accumulator zero")]
+    #[test_case(LDA_IMM, 0x12, (0x12, 0xCD, 0xEF), StatusFlag::empty(); "load immediate accumulator")]
+    #[test_case(LDA_IMM, 0x85, (0x85, 0xCD, 0xEF), StatusFlag::Negative; "load immediate accumulator negative")]
+    #[test_case(LDA_IMM, 0x00, (0x00, 0xCD, 0xEF), StatusFlag::Zero; "load immediate accumulator zero")]
     
-    #[test_case(LDX_IMM, 0x12, (0xAB, 0x12, 0xEF), 0; "load immediate register x")]
-    #[test_case(LDX_IMM, 0x85, (0xAB, 0x85, 0xEF), StatusFlag::Negative as u8; "load immediate register x negative")]
-    #[test_case(LDX_IMM, 0x00, (0xAB, 0x00, 0xEF), StatusFlag::Zero as u8; "load immediate register x zero")]
+    #[test_case(LDX_IMM, 0x12, (0xAB, 0x12, 0xEF), StatusFlag::empty(); "load immediate register x")]
+    #[test_case(LDX_IMM, 0x85, (0xAB, 0x85, 0xEF), StatusFlag::Negative; "load immediate register x negative")]
+    #[test_case(LDX_IMM, 0x00, (0xAB, 0x00, 0xEF), StatusFlag::Zero; "load immediate register x zero")]
 
-    #[test_case(LDY_IMM, 0x12, (0xAB, 0xCD, 0x12), 0; "load immediate register y")]
-    #[test_case(LDY_IMM, 0x85, (0xAB, 0xCD, 0x85), StatusFlag::Negative as u8; "load immediate register y negative")]
-    #[test_case(LDY_IMM, 0x00, (0xAB, 0xCD, 0x00), StatusFlag::Zero as u8; "load immediate register y zero")]
-    fn immediate(op_code: u8, value_immediate: u8, expected_register_values: (u8, u8, u8), expected_status: u8) {
+    #[test_case(LDY_IMM, 0x12, (0xAB, 0xCD, 0x12), StatusFlag::empty(); "load immediate register y")]
+    #[test_case(LDY_IMM, 0x85, (0xAB, 0xCD, 0x85), StatusFlag::Negative; "load immediate register y negative")]
+    #[test_case(LDY_IMM, 0x00, (0xAB, 0xCD, 0x00), StatusFlag::Zero; "load immediate register y zero")]
+    fn immediate(op_code: u8, value_immediate: u8, expected_register_values: (u8, u8, u8), expected_status: StatusFlag) {
         let mut memory = [op_code, value_immediate];
         let mut cpu = Cpu::new();
         (cpu.register_a, cpu.register_x, cpu.register_y) = (0xAB, 0xCD, 0xEF);
@@ -492,7 +494,7 @@ mod load_register_tests {
         assert_eq!(cpu.run_step(&mut mem).unwrap(), 3);
         assert_eq!(cpu.register_a, 0x33);
         assert_eq!(cpu.program_counter, 2);
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
     }
 }
 
@@ -526,10 +528,10 @@ mod transfer_register_tests {
     use crate::instructions::op_codes::*;
     use test_case::test_case;
     
-    #[test_case(TAX, 0x5B, 0; "Transfer accumulator to X")]
-    #[test_case(TAX, 0xFE, StatusFlag::Negative as u8; "Transfer accumulator to X negative")]
-    #[test_case(TAX, 0x00, StatusFlag::Zero as u8; "Transfer accumulator to X zero")]
-    fn transfer_accumulator_to_x(op_code: u8, accumulator: u8, expected_status: u8) {
+    #[test_case(TAX, 0x5B, StatusFlag::empty(); "Transfer accumulator to X")]
+    #[test_case(TAX, 0xFE, StatusFlag::Negative; "Transfer accumulator to X negative")]
+    #[test_case(TAX, 0x00, StatusFlag::Zero; "Transfer accumulator to X zero")]
+    fn transfer_accumulator_to_x(op_code: u8, accumulator: u8, expected_status: StatusFlag) {
         let mut memory = [op_code];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -540,10 +542,10 @@ mod transfer_register_tests {
         assert_eq!(cpu.status, expected_status, "CPU status");
     }
     
-    #[test_case(TAY, 0x5B, 0; "Transfer accumulator to Y")]
-    #[test_case(TAY, 0xFE, StatusFlag::Negative as u8; "Transfer accumulator to Y negative")]
-    #[test_case(TAY, 0x00, StatusFlag::Zero as u8; "Transfer accumulator to Y zero")]
-    fn transfer_accumulator_to_y(op_code: u8, accumulator: u8, expected_status: u8) {
+    #[test_case(TAY, 0x5B, StatusFlag::empty(); "Transfer accumulator to Y")]
+    #[test_case(TAY, 0xFE, StatusFlag::Negative; "Transfer accumulator to Y negative")]
+    #[test_case(TAY, 0x00, StatusFlag::Zero; "Transfer accumulator to Y zero")]
+    fn transfer_accumulator_to_y(op_code: u8, accumulator: u8, expected_status: StatusFlag) {
         let mut memory = [op_code];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -555,10 +557,10 @@ mod transfer_register_tests {
     }
 
     
-    #[test_case(TXA, 0x5B, 0; "Transfer X to accumulator")]
-    #[test_case(TXA, 0xFE, StatusFlag::Negative as u8; "Transfer X to accumulator negative")]
-    #[test_case(TXA, 0x00, StatusFlag::Zero as u8; "Transfer X to accumulator zero")]
-    fn transfer_x_to_accumulator(op_code: u8, register_x: u8, expected_status: u8) {
+    #[test_case(TXA, 0x5B, StatusFlag::empty(); "Transfer X to accumulator")]
+    #[test_case(TXA, 0xFE, StatusFlag::Negative; "Transfer X to accumulator negative")]
+    #[test_case(TXA, 0x00, StatusFlag::Zero; "Transfer X to accumulator zero")]
+    fn transfer_x_to_accumulator(op_code: u8, register_x: u8, expected_status: StatusFlag) {
         let mut memory = [op_code];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -570,10 +572,10 @@ mod transfer_register_tests {
     }
 
     
-    #[test_case(TYA, 0x5B, 0; "Transfer Y to accumulator")]
-    #[test_case(TYA, 0xFE, StatusFlag::Negative as u8; "Transfer Y to accumulator negative")]
-    #[test_case(TYA, 0x00, StatusFlag::Zero as u8; "Transfer Y to accumulator zero")]
-    fn transfer_y_to_accumulator(op_code: u8, register_y: u8, expected_status: u8) {
+    #[test_case(TYA, 0x5B, StatusFlag::empty(); "Transfer Y to accumulator")]
+    #[test_case(TYA, 0xFE, StatusFlag::Negative; "Transfer Y to accumulator negative")]
+    #[test_case(TYA, 0x00, StatusFlag::Zero; "Transfer Y to accumulator zero")]
+    fn transfer_y_to_accumulator(op_code: u8, register_y: u8, expected_status: StatusFlag) {
         let mut memory = [op_code];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -589,25 +591,25 @@ mod transfer_register_tests {
         let mut memory = [TXS, TXS];
         let mut cpu = Cpu::new();
         cpu.reset();
-        cpu.status = 0x00;
+        cpu.status = StatusFlag::empty();
         (cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer) = (0xAB, 0xFF, 0xCD, 0x1F);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (0xAB, 0xFF, 0xCD, 0xFF));
-        assert_eq!(cpu.status, 0x00);
+        assert!(cpu.status.is_empty());
 
         cpu.register_x = 0x00;
-        cpu.status = 0xFF;
+        cpu.status = StatusFlag::all();
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y, cpu.stack_pointer), (0xAB, 0x00, 0xCD, 0x00));
-        assert_eq!(cpu.status, 0xFF);
+        assert!(cpu.status.is_all());
     }
 
-    #[test_case(TSX, 0x5B, 0; "Transfer stack to X")]
-    #[test_case(TSX, 0xFE, StatusFlag::Negative as u8; "Transfer stack to X negative")]
-    #[test_case(TSX, 0x00, StatusFlag::Zero as u8; "Transfer stack to X zero")]
-    fn transfer_stack_to_x(op_code: u8, stack_pointer: u8, expected_status: u8) {
+    #[test_case(TSX, 0x5B, StatusFlag::empty(); "Transfer stack to X")]
+    #[test_case(TSX, 0xFE, StatusFlag::Negative; "Transfer stack to X negative")]
+    #[test_case(TSX, 0x00, StatusFlag::Zero; "Transfer stack to X zero")]
+    fn transfer_stack_to_x(op_code: u8, stack_pointer: u8, expected_status: StatusFlag) {
         let mut memory = [op_code];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -634,15 +636,15 @@ mod increment_instruction_tests {
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);        
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xFF, 0xDF));
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0x00, 0xDF));
-        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+        assert_eq!(cpu.status, StatusFlag::Zero);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0x01, 0xDF));
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
     }
 
     
@@ -656,11 +658,11 @@ mod increment_instruction_tests {
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);        
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0x00, 0xDF));
-        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+        assert_eq!(cpu.status, StatusFlag::Zero);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xFF, 0xDF));
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
     }
 
     
@@ -674,15 +676,15 @@ mod increment_instruction_tests {
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);        
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xAB, 0xFF));
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xAB, 0x00));
-        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+        assert_eq!(cpu.status, StatusFlag::Zero);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xAB, 0x01));
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
     }
     
     #[test]
@@ -695,11 +697,11 @@ mod increment_instruction_tests {
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);        
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xDF, 0x00));
-        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+        assert_eq!(cpu.status, StatusFlag::Zero);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0xEE, 0xDF, 0xFF));
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
     }
 
     #[test]
@@ -711,19 +713,19 @@ mod increment_instruction_tests {
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
         assert_eq!(memory, [op::INC_ZER, 0x02, 0xFF]);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
 
         cpu.reset();
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
         assert_eq!(memory, [op::INC_ZER, 0x02, 0x00]);
-        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+        assert_eq!(cpu.status, StatusFlag::Zero);
         
         cpu.reset();
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
         assert_eq!(memory, [op::INC_ZER, 0x02, 0x01]);
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
     }
 
     #[test]
@@ -735,7 +737,7 @@ mod increment_instruction_tests {
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 6);
         assert_eq!(memory, [op::INC_ZEX, 0x02, op::NOP, op::NOP, 0xFF, op::NOP]);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
     }
 
     #[test]
@@ -747,13 +749,13 @@ mod increment_instruction_tests {
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
         assert_eq!(memory, [op::DEC_ZER, 0x02, 0x00]);
-        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+        assert_eq!(cpu.status,  StatusFlag::Zero);
 
         cpu.reset();
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!((cpu.register_a, cpu.register_x, cpu.register_y), (0, 0, 0));
         assert_eq!(memory, [op::DEC_ZER, 0x02, 0xFF]);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
     }
     
     #[test]
@@ -765,7 +767,7 @@ mod increment_instruction_tests {
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 6);
         assert_eq!(memory, [op::DEC_ZEX, 0x02, op::NOP, op::NOP, 0xFD, op::NOP]);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
     }
 }
 
@@ -783,21 +785,20 @@ mod direct_instruction_tests {
     fn clear_codes(op_code: u8, status_bit: StatusFlag) {
         let mut memory = [op_code];
         let mut cpu = Cpu::new();
-        let status_flag = status_bit as u8;
+        cpu.reset();
+
+        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
+        assert!(cpu.status.is_empty());
 
         cpu.reset();
+        cpu.status = status_bit;
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
 
         cpu.reset();
-        cpu.status = status_flag;
+        cpu.status = StatusFlag::all();
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.status, 0);
-
-        cpu.reset();
-        cpu.status = 0xFF;
-        assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.status, !status_flag);
+        assert_eq!(cpu.status, !status_bit);
     }
 
     
@@ -806,21 +807,19 @@ mod direct_instruction_tests {
     fn set_codes(op_code: u8, status_bit: StatusFlag) {
         let mut memory = [op_code];
         let mut cpu = Cpu::new();
-        let status_flag = status_bit as u8;
-
         cpu.reset();
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.status, status_flag);
+        assert_eq!(cpu.status, status_bit);
 
         cpu.reset();
-        cpu.status = status_flag;
+        cpu.status = status_bit;
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.status, status_flag);
+        assert_eq!(cpu.status, status_bit);
 
         cpu.reset();
-        cpu.status = 0xFF;
+        cpu.status = StatusFlag::all();
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.status, 0xFF);
+        assert!(cpu.status.is_all());
     }
 
     #[test]
@@ -859,12 +858,12 @@ mod operation_tests {
     use crate::instructions::op_codes as op;
     use test_case::test_case;
 
-    #[test_case(0b0001_1010, StatusFlag::Zero as u8 | StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "Bit test zero")]
-    #[test_case(0b0101_0101, StatusFlag::Overflow as u8 | StatusFlag::Negative as u8; "Bit test overflow")]
-    #[test_case(0b1101_0101, StatusFlag::Overflow as u8 | StatusFlag::Negative as u8; "Bit test overflow and negative")]
-    #[test_case(0b1001_0101, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "Bit test negative")]
-    #[test_case(0b0001_1111, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "Bit test nothing")]
-    fn bit_test(accumulator: u8, expected_flags: u8) {
+    #[test_case(0b0001_1010,  StatusFlag::Zero | StatusFlag::Negative | StatusFlag::Overflow; "Bit test zero")]
+    #[test_case(0b0101_0101, StatusFlag::Overflow | StatusFlag::Negative; "Bit test overflow")]
+    #[test_case(0b1101_0101, StatusFlag::Overflow | StatusFlag::Negative; "Bit test overflow and negative")]
+    #[test_case(0b1001_0101, StatusFlag::Negative | StatusFlag::Overflow; "Bit test negative")]
+    #[test_case(0b0001_1111, StatusFlag::Negative | StatusFlag::Overflow; "Bit test nothing")]
+    fn bit_test(accumulator: u8, expected_flags: StatusFlag) {
         let mut memory = [op::BIT_ZER, 0x02, 0b1110_0101];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -875,13 +874,13 @@ mod operation_tests {
         assert_eq!(cpu.status, expected_flags, "CPU Flags");
     }
 
-    #[test_case(0b1100_1000, 0b1001_0000, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "asl zero page carry negative")]
-    #[test_case(0b1001_0000, 0b0010_0000, StatusFlag::Carry as u8; "asl zero page carry only")]
-    #[test_case(0b0010_0000, 0b0100_0000, 0; "asl zer page regular")]
-    #[test_case(0b0100_0000, 0b1000_0000, StatusFlag::Negative as u8; "asl zero page negative only")]
-    #[test_case(0b1000_0000, 0b0000_0000, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "asl zero page carry zero")]
-    #[test_case(0b0000_0000, 0b0000_0000, StatusFlag::Zero as u8; "asl zero page zero only")]
-    fn asl_accumulator(accumulator_before: u8, expected_after: u8, expected_status: u8) {
+    #[test_case(0b1100_1000, 0b1001_0000, StatusFlag::Carry | StatusFlag::Negative; "asl zero page carry negative")]
+    #[test_case(0b1001_0000, 0b0010_0000, StatusFlag::Carry; "asl zero page carry only")]
+    #[test_case(0b0010_0000, 0b0100_0000, StatusFlag::empty(); "asl zer page regular")]
+    #[test_case(0b0100_0000, 0b1000_0000, StatusFlag::Negative; "asl zero page negative only")]
+    #[test_case(0b1000_0000, 0b0000_0000, StatusFlag::Carry |  StatusFlag::Zero; "asl zero page carry zero")]
+    #[test_case(0b0000_0000, 0b0000_0000,  StatusFlag::Zero; "asl zero page zero only")]
+    fn asl_accumulator(accumulator_before: u8, expected_after: u8, expected_status: StatusFlag) {
         let mut memory = [op::ASL_ACC];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -893,13 +892,13 @@ mod operation_tests {
         assert_eq!(cpu.status, expected_status, "CPU status");
     }
     
-    #[test_case(0b1100_1000, 0b1001_0000, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "asl zero page carry negative")]
-    #[test_case(0b1001_0000, 0b0010_0000, StatusFlag::Carry as u8; "asl zero page carry only")]
-    #[test_case(0b0010_0000, 0b0100_0000, 0; "asl zer page regular")]
-    #[test_case(0b0100_0000, 0b1000_0000, StatusFlag::Negative as u8; "asl zero page negative only")]
-    #[test_case(0b1000_0000, 0b0000_0000, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "asl zero page carry zero")]
-    #[test_case(0b0000_0000, 0b0000_0000, StatusFlag::Zero as u8; "asl zero page zero only")]
-    fn asl_zero_page(before: u8, expected_after: u8, expected_status: u8) {
+    #[test_case(0b1100_1000, 0b1001_0000, StatusFlag::Carry | StatusFlag::Negative; "asl zero page carry negative")]
+    #[test_case(0b1001_0000, 0b0010_0000, StatusFlag::Carry; "asl zero page carry only")]
+    #[test_case(0b0010_0000, 0b0100_0000, StatusFlag::empty(); "asl zer page regular")]
+    #[test_case(0b0100_0000, 0b1000_0000, StatusFlag::Negative; "asl zero page negative only")]
+    #[test_case(0b1000_0000, 0b0000_0000, StatusFlag::Carry |  StatusFlag::Zero; "asl zero page carry zero")]
+    #[test_case(0b0000_0000, 0b0000_0000,  StatusFlag::Zero; "asl zero page zero only")]
+    fn asl_zero_page(before: u8, expected_after: u8, expected_status: StatusFlag) {
         let mut memory = [op::ASL_ZER, 0x02, before];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -911,11 +910,11 @@ mod operation_tests {
         assert_eq!(cpu.register_a, 0, "Accumulator");
     }
     
-    #[test_case(0b1100_1000, 0b0110_0100, 0u8; "Regular bit shift")]
-    #[test_case(0b1100_1001, 0b0110_0100, StatusFlag::Carry as u8; "Carry bit shift")]
-    #[test_case(0b0000_0001, 0b0000_0000, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "Carry and zero")]
-    #[test_case(0b0000_0000, 0b0000_0000, StatusFlag::Zero as u8; "Zero")]
-    fn lsr_accumulator(before: u8, expected_after: u8, expected_status: u8) {
+    #[test_case(0b1100_1000, 0b0110_0100, StatusFlag::empty(); "Regular bit shift")]
+    #[test_case(0b1100_1001, 0b0110_0100, StatusFlag::Carry; "Carry bit shift")]
+    #[test_case(0b0000_0001, 0b0000_0000, StatusFlag::Carry |  StatusFlag::Zero; "Carry and zero")]
+    #[test_case(0b0000_0000, 0b0000_0000,  StatusFlag::Zero; "Zero")]
+    fn lsr_accumulator(before: u8, expected_after: u8, expected_status: StatusFlag) {
         let mut memory = [op::LSR_ACC];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -928,11 +927,11 @@ mod operation_tests {
         assert_eq!(cpu.status, expected_status, "CPU status flags");
     }
 
-    #[test_case(0b1100_1000, 0b0110_0100, 0u8; "Regular bit shift")]
-    #[test_case(0b1100_1001, 0b0110_0100, StatusFlag::Carry as u8; "Carry bit shift")]
-    #[test_case(0b0000_0001, 0b0000_0000, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "Carry and zero")]
-    #[test_case(0b0000_0000, 0b0000_0000,StatusFlag::Zero as u8; "Zero")]
-    fn lsr_zero_page(before: u8, expected_after: u8, expected_status: u8) {
+    #[test_case(0b1100_1000, 0b0110_0100, StatusFlag::empty(); "Regular bit shift")]
+    #[test_case(0b1100_1001, 0b0110_0100, StatusFlag::Carry; "Carry bit shift")]
+    #[test_case(0b0000_0001, 0b0000_0000, StatusFlag::Carry |  StatusFlag::Zero; "Carry and zero")]
+    #[test_case(0b0000_0000, 0b0000_0000, StatusFlag::Zero; "Zero")]
+    fn lsr_zero_page(before: u8, expected_after: u8, expected_status: StatusFlag) {
         let mut memory = [op::LSR_ZER, 0x02, before];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -946,11 +945,11 @@ mod operation_tests {
     }
 
     // ORA, ROL, ROR
-    #[test_case(0b1001_0110, 0b0000_0000, 0b1001_0110, StatusFlag::Negative as u8; "unchanged with zero")]
-    #[test_case(0b0000_0000, 0b1001_0110, 0b1001_0110, StatusFlag::Negative as u8; "zero accumulator")]
-    #[test_case(0b0110_1001, 0b0001_0110, 0b0111_1111, 0; "regular without status flags")]
-    #[test_case(0, 0, 0, StatusFlag::Zero as u8; "zero")]
-    fn ora(accumulator_before: u8, value_before: u8, expected_result: u8, expected_status: u8) {
+    #[test_case(0b1001_0110, 0b0000_0000, 0b1001_0110, StatusFlag::Negative; "unchanged with zero")]
+    #[test_case(0b0000_0000, 0b1001_0110, 0b1001_0110, StatusFlag::Negative; "zero accumulator")]
+    #[test_case(0b0110_1001, 0b0001_0110, 0b0111_1111, StatusFlag::empty(); "regular without status flags")]
+    #[test_case(0, 0, 0,  StatusFlag::Zero; "zero")]
+    fn ora(accumulator_before: u8, value_before: u8, expected_result: u8, expected_status: StatusFlag) {
         let mut memory = [op::ORA_IMM, value_before];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -962,12 +961,12 @@ mod operation_tests {
         assert_eq!(cpu.status, expected_status, "CPU status flags");
     }
     
-    #[test_case(0b0000_0000, false, 0b0000_0000, StatusFlag::Zero as u8; "unchanged")]
-    #[test_case(0b0000_0000, true, 0b0000_0001, 0; "carry transferred to value")]
-    #[test_case(0b1010_1010, true, 0b0101_0101, StatusFlag::Carry as u8; "carry correctly set")]
-    #[test_case(0b0000_1010, false, 0b0001_0100, 0; "flags cleared")]
-    #[test_case(0b0100_1010, false, 0b1001_0100, StatusFlag::Negative as u8; "negative is set")]
-    fn rol_accumulator(accumulator_before: u8, carry_bit: bool, expected_value: u8, expected_status: u8) {
+    #[test_case(0b0000_0000, false, 0b0000_0000, StatusFlag::Zero; "unchanged")]
+    #[test_case(0b0000_0000, true, 0b0000_0001, StatusFlag::empty(); "carry transferred to value")]
+    #[test_case(0b1010_1010, true, 0b0101_0101, StatusFlag::Carry; "carry correctly set")]
+    #[test_case(0b0000_1010, false, 0b0001_0100, StatusFlag::empty(); "flags cleared")]
+    #[test_case(0b0100_1010, false, 0b1001_0100, StatusFlag::Negative; "negative is set")]
+    fn rol_accumulator(accumulator_before: u8, carry_bit: bool, expected_value: u8, expected_status: StatusFlag) {
         let mut memory = [op::ROL_ACC];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -980,12 +979,12 @@ mod operation_tests {
         assert_eq!(cpu.status, expected_status, "CPU status flags");
     }
     
-    #[test_case(0b0000_0000, false, 0b0000_0000, StatusFlag::Zero as u8; "unchanged")]
-    #[test_case(0b0000_0000, true, 0b0000_0001, 0; "carry transferred to value")]
-    #[test_case(0b1010_1010, true, 0b0101_0101, StatusFlag::Carry as u8; "carry correctly set")]
-    #[test_case(0b0000_1010, false, 0b0001_0100, 0; "flags cleared")]
-    #[test_case(0b0100_1010, false, 0b1001_0100, StatusFlag::Negative as u8; "negative is set")]
-    fn rol_memory(value_before: u8, carry_bit: bool, expected_value: u8, expected_status: u8) {
+    #[test_case(0b0000_0000, false, 0b0000_0000,  StatusFlag::Zero; "unchanged")]
+    #[test_case(0b0000_0000, true, 0b0000_0001, StatusFlag::empty(); "carry transferred to value")]
+    #[test_case(0b1010_1010, true, 0b0101_0101, StatusFlag::Carry; "carry correctly set")]
+    #[test_case(0b0000_1010, false, 0b0001_0100, StatusFlag::empty(); "flags cleared")]
+    #[test_case(0b0100_1010, false, 0b1001_0100, StatusFlag::Negative; "negative is set")]
+    fn rol_memory(value_before: u8, carry_bit: bool, expected_value: u8, expected_status: StatusFlag) {
         let mut memory = [op::ROL_ZER, 0x02, value_before];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -999,13 +998,13 @@ mod operation_tests {
         assert_eq!(cpu.register_a, 0xAB);
     }
 
-    #[test_case(0b0000_0000, false, 0b0000_0000, StatusFlag::Zero as u8; "unchanged")]
-    #[test_case(0b0000_0000, true, 0b1000_0000, StatusFlag::Negative as u8; "carry transferred to value")]
-    #[test_case(0b1010_1010, true, 0b1101_0101, StatusFlag::Negative as u8; "negative correctly set, carry applied")]
-    #[test_case(0b0000_1010, false, 0b0000_0101, 0; "flags cleared")]
-    #[test_case(0b0100_1011, true, 0b1010_0101, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "carry and negative are set")]
-    #[test_case(0b0100_1011, false, 0b0010_0101, StatusFlag::Carry as u8; "carry is set")]
-    fn ror_accumulator(accumulator_before: u8, carry_bit: bool, expected_value: u8, expected_status: u8) {
+    #[test_case(0b0000_0000, false, 0b0000_0000,  StatusFlag::Zero; "unchanged")]
+    #[test_case(0b0000_0000, true, 0b1000_0000, StatusFlag::Negative; "carry transferred to value")]
+    #[test_case(0b1010_1010, true, 0b1101_0101, StatusFlag::Negative; "negative correctly set, carry applied")]
+    #[test_case(0b0000_1010, false, 0b0000_0101, StatusFlag::empty(); "flags cleared")]
+    #[test_case(0b0100_1011, true, 0b1010_0101, StatusFlag::Carry | StatusFlag::Negative; "carry and negative are set")]
+    #[test_case(0b0100_1011, false, 0b0010_0101, StatusFlag::Carry; "carry is set")]
+    fn ror_accumulator(accumulator_before: u8, carry_bit: bool, expected_value: u8, expected_status: StatusFlag) {
         let mut memory = [op::ROR_ACC];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -1018,13 +1017,13 @@ mod operation_tests {
         assert_eq!(cpu.status, expected_status, "CPU status flags");
     }
 
-    #[test_case(0b0000_0000, false, 0b0000_0000, StatusFlag::Zero as u8; "unchanged")]
-    #[test_case(0b0000_0000, true, 0b1000_0000, StatusFlag::Negative as u8; "carry transferred to value")]
-    #[test_case(0b1010_1010, true, 0b1101_0101, StatusFlag::Negative as u8; "negative correctly set, carry applied")]
-    #[test_case(0b0000_1010, false, 0b0000_0101, 0; "flags cleared")]
-    #[test_case(0b0100_1011, true, 0b1010_0101, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "carry and negative are set")]
-    #[test_case(0b0100_1011, false, 0b0010_0101, StatusFlag::Carry as u8; "carry is set")]
-    fn ror_memory(memory_before: u8, carry_bit: bool, expected_value: u8, expected_status: u8) {
+    #[test_case(0b0000_0000, false, 0b0000_0000,  StatusFlag::Zero; "unchanged")]
+    #[test_case(0b0000_0000, true, 0b1000_0000, StatusFlag::Negative; "carry transferred to value")]
+    #[test_case(0b1010_1010, true, 0b1101_0101, StatusFlag::Negative; "negative correctly set, carry applied")]
+    #[test_case(0b0000_1010, false, 0b0000_0101, StatusFlag::empty(); "flags cleared")]
+    #[test_case(0b0100_1011, true, 0b1010_0101, StatusFlag::Carry | StatusFlag::Negative; "carry and negative are set")]
+    #[test_case(0b0100_1011, false, 0b0010_0101, StatusFlag::Carry; "carry is set")]
+    fn ror_memory(memory_before: u8, carry_bit: bool, expected_value: u8, expected_status: StatusFlag) {
         let mut memory = [op::ROR_ZER, 0x02, memory_before];
         let mut cpu = Cpu::new();
         cpu.reset();
@@ -1051,19 +1050,19 @@ mod operation_tests {
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 0b_1010_1010);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.register_a, 0b_1000_0010);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.register_a, 0b_0000_0010);
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 0b_0000_0000);
-        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+        assert_eq!(cpu.status,  StatusFlag::Zero);
     }
 
     #[test_case(op::CMP_IMM, (100, 0, 0); "compare register a")]
@@ -1076,13 +1075,13 @@ mod operation_tests {
         (cpu.register_a, cpu.register_x, cpu.register_y) = register_values;
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.status, StatusFlag::Zero as u8 | StatusFlag::Carry as u8);
+        assert_eq!(cpu.status,  StatusFlag::Zero | StatusFlag::Carry);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8);
+        assert_eq!(cpu.status, StatusFlag::Carry);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
     }
 
     #[test]
@@ -1100,35 +1099,35 @@ mod operation_tests {
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 0b1000_1000);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.register_a, 0b1101_0010);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.register_a, 0b0111_1101);
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, 0);
-        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+        assert_eq!(cpu.status,  StatusFlag::Zero);
     }
 
-    #[test_case(0x00, 0x00, false, 0x00, StatusFlag::Zero as u8; "zero")] 
-    #[test_case(0x50, 0x50, false, 0xa0, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "pos overflow")] 
-    #[test_case(0xff, 0xff, false, 0xfe, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "max no overflow")] 
-    #[test_case(0x80, 0xff, false, 0x7f, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "neg overflow to pos")] 
-    #[test_case(0x7f, 0x01, false, 0x80, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "classic overflow")] 
-    #[test_case(0xff, 0x01, false, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "wrap to zero")] 
-    #[test_case(0x01, 0x01, true, 0x03, 0; "carry in")] 
-    #[test_case(0x00, 0x00, true, 0x01, 0; "carry in only")] 
-    #[test_case(0x40, 0x40, false, 0x80, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "neg result")] #[test_case(0x7f, 0x00, true, 0x80, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "bin_adc_carry_into_bit7")]
-    #[test_case(0x80, 0x80, true, 0x01, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "bin_adc_bit7_plus_bit7_plus_carry")]
-    #[test_case(0xff, 0x00, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "bin_adc_zero_with_carry_out")]
-    #[test_case(0x80, 0x01, false, 0x81, StatusFlag::Negative as u8; "bin_adc_negative_no_overflow")]
-    #[test_case(0x80, 0x80, false, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8 | StatusFlag::Overflow as u8; "bin_adc_negative_plus_negative_no_overflow")]
-    fn adc_binary_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: u8)
+    #[test_case(0x00, 0x00, false, 0x00,  StatusFlag::Zero; "zero")] 
+    #[test_case(0x50, 0x50, false, 0xa0, StatusFlag::Negative | StatusFlag::Overflow; "pos overflow")] 
+    #[test_case(0xff, 0xff, false, 0xfe, StatusFlag::Carry | StatusFlag::Negative; "max no overflow")] 
+    #[test_case(0x80, 0xff, false, 0x7f, StatusFlag::Carry | StatusFlag::Overflow; "neg overflow to pos")] 
+    #[test_case(0x7f, 0x01, false, 0x80, StatusFlag::Negative | StatusFlag::Overflow; "classic overflow")] 
+    #[test_case(0xff, 0x01, false, 0x00, StatusFlag::Carry |  StatusFlag::Zero; "wrap to zero")] 
+    #[test_case(0x01, 0x01, true, 0x03, StatusFlag::empty(); "carry in")] 
+    #[test_case(0x00, 0x00, true, 0x01, StatusFlag::empty(); "carry in only")] 
+    #[test_case(0x40, 0x40, false, 0x80, StatusFlag::Negative | StatusFlag::Overflow; "neg result")] #[test_case(0x7f, 0x00, true, 0x80, StatusFlag::Negative | StatusFlag::Overflow; "bin_adc_carry_into_bit7")]
+    #[test_case(0x80, 0x80, true, 0x01, StatusFlag::Carry | StatusFlag::Overflow; "bin_adc_bit7_plus_bit7_plus_carry")]
+    #[test_case(0xff, 0x00, true, 0x00, StatusFlag::Carry |  StatusFlag::Zero; "bin_adc_zero_with_carry_out")]
+    #[test_case(0x80, 0x01, false, 0x81, StatusFlag::Negative; "bin_adc_negative_no_overflow")]
+    #[test_case(0x80, 0x80, false, 0x00, StatusFlag::Carry |  StatusFlag::Zero | StatusFlag::Overflow; "bin_adc_negative_plus_negative_no_overflow")]
+    fn adc_binary_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: StatusFlag)
     {
         let mut memory = [op::ADC_IMM, m];
         let mut cpu = Cpu::new();
@@ -1141,19 +1140,19 @@ mod operation_tests {
         assert_eq!(cpu.status, expected_status);
     }
 
-    #[test_case(0x05, 0x03, true, 0x02, StatusFlag::Carry as u8; "normal")]
-    #[test_case(0x00, 0x01, true, 0xff, StatusFlag::Negative as u8; "borrow")]
-    #[test_case(0x80, 0x01, true, 0x7f, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "neg_minus_pos_overflow")]
-    #[test_case(0x7f, 0xff, true, 0x80, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "pos_minus_neg_overflow")]
-    #[test_case(0x00, 0x00, false, 0xff, StatusFlag::Negative as u8; "extra_borrow_cin0")]
-    #[test_case(0x03, 0x03, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8 ; "exact_zero")]
-    #[test_case(0xff, 0x00, true, 0xff, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "no_borrow_needed")]
-    #[test_case(0x00, 0x00, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "bin_sbc_zero_minus_zero_cin1")]
-    #[test_case(0x00, 0x01, true, 0xff, StatusFlag::Negative as u8; "bin_sbc_zero_minus_one")]
-    #[test_case(0xff, 0x01, true, 0xfe, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "bin_sbc_max_minus_one")]
-    #[test_case(0x80, 0xff, true, 0x81, StatusFlag::Negative as u8; "bin_sbc_min_minus_one_overflow")]
-    #[test_case(0x80, 0x00, false, 0x7f, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "bin_sbc_carry_in_changes_overflow")]
-    fn sbc_binary_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: u8)
+    #[test_case(0x05, 0x03, true, 0x02, StatusFlag::Carry; "normal")]
+    #[test_case(0x00, 0x01, true, 0xff, StatusFlag::Negative; "borrow")]
+    #[test_case(0x80, 0x01, true, 0x7f, StatusFlag::Carry | StatusFlag::Overflow; "neg_minus_pos_overflow")]
+    #[test_case(0x7f, 0xff, true, 0x80, StatusFlag::Negative | StatusFlag::Overflow; "pos_minus_neg_overflow")]
+    #[test_case(0x00, 0x00, false, 0xff, StatusFlag::Negative; "extra_borrow_cin0")]
+    #[test_case(0x03, 0x03, true, 0x00, StatusFlag::Carry |  StatusFlag::Zero ; "exact_zero")]
+    #[test_case(0xff, 0x00, true, 0xff, StatusFlag::Carry | StatusFlag::Negative; "no_borrow_needed")]
+    #[test_case(0x00, 0x00, true, 0x00, StatusFlag::Carry |  StatusFlag::Zero; "bin_sbc_zero_minus_zero_cin1")]
+    #[test_case(0x00, 0x01, true, 0xff, StatusFlag::Negative; "bin_sbc_zero_minus_one")]
+    #[test_case(0xff, 0x01, true, 0xfe, StatusFlag::Carry | StatusFlag::Negative; "bin_sbc_max_minus_one")]
+    #[test_case(0x80, 0xff, true, 0x81, StatusFlag::Negative; "bin_sbc_min_minus_one_overflow")]
+    #[test_case(0x80, 0x00, false, 0x7f, StatusFlag::Carry | StatusFlag::Overflow; "bin_sbc_carry_in_changes_overflow")]
+    fn sbc_binary_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: StatusFlag)
     {
         let mut memory = [op::SBC_IMM, m];
         let mut cpu = Cpu::new();
@@ -1166,21 +1165,21 @@ mod operation_tests {
         assert_eq!(cpu.status, expected_status);
     }
     
-    #[test_case(0x00, 0x09, false, 0x09, 0; "dec_adc_simple")]
-    #[test_case(0x09, 0x01, false, 0x10, 0; "dec_adc_low_nibble_carry")]
-    #[test_case(0x99, 0x01, false, 0x00, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_adc_full_carry_out")]
-    #[test_case(0x99, 0x01, false, 0x00, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_adc_z_flag_bug")]
-    #[test_case(0x69, 0x30, false, 0x99, StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "dec_adc_nv_bug_99")]
-    #[test_case(0x09, 0x00, true, 0x10, 0; "dec_adc_carry_in_dec")]
-    #[test_case(0x58, 0x46, false, 0x04, StatusFlag::Carry as u8 | StatusFlag::Negative as u8 | StatusFlag::Overflow as u8; "dec_adc_both_nibbles_carry")]
-    #[test_case(0x99, 0x99, true, 0x99, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "dec_adc_max_bcd")]
-    #[test_case(0x0f, 0x00, false, 0x15, 0; "dec_adc_invalid_bcd_high_nibble")]
-    #[test_case(0xff, 0xff, false, 0x64, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_adc_invalid_bcd_both")]
-    #[test_case(0x08, 0x01, false, 0x09, 0; "dec_adc_low_nibble_no_carry")]
-    #[test_case(0x09, 0x00, true, 0x10, 0; "dec_adc_low_nibble_carry_with_carry_in")]
-    #[test_case(0x40, 0x10, false, 0x50, 0; "dec_adc_high_nibble_no_carry")]
-    #[test_case(0x90, 0x10, false, 0x00, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_adc_high_nibble_carry")]
-    fn adc_decimal_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: u8)
+    #[test_case(0x00, 0x09, false, 0x09, StatusFlag::empty(); "dec_adc_simple")]
+    #[test_case(0x09, 0x01, false, 0x10, StatusFlag::empty(); "dec_adc_low_nibble_carry")]
+    #[test_case(0x99, 0x01, false, 0x00, StatusFlag::Carry | StatusFlag::Negative; "dec_adc_full_carry_out")]
+    #[test_case(0x99, 0x01, false, 0x00, StatusFlag::Carry | StatusFlag::Negative; "dec_adc_z_flag_bug")]
+    #[test_case(0x69, 0x30, false, 0x99, StatusFlag::Negative | StatusFlag::Overflow; "dec_adc_nv_bug_99")]
+    #[test_case(0x09, 0x00, true, 0x10, StatusFlag::empty(); "dec_adc_carry_in_dec")]
+    #[test_case(0x58, 0x46, false, 0x04, StatusFlag::Carry | StatusFlag::Negative | StatusFlag::Overflow; "dec_adc_both_nibbles_carry")]
+    #[test_case(0x99, 0x99, true, 0x99, StatusFlag::Carry | StatusFlag::Overflow; "dec_adc_max_bcd")]
+    #[test_case(0x0f, 0x00, false, 0x15, StatusFlag::empty(); "dec_adc_invalid_bcd_high_nibble")]
+    #[test_case(0xff, 0xff, false, 0x64, StatusFlag::Carry | StatusFlag::Negative; "dec_adc_invalid_bcd_both")]
+    #[test_case(0x08, 0x01, false, 0x09, StatusFlag::empty(); "dec_adc_low_nibble_no_carry")]
+    #[test_case(0x09, 0x00, true, 0x10, StatusFlag::empty(); "dec_adc_low_nibble_carry_with_carry_in")]
+    #[test_case(0x40, 0x10, false, 0x50, StatusFlag::empty(); "dec_adc_high_nibble_no_carry")]
+    #[test_case(0x90, 0x10, false, 0x00, StatusFlag::Carry | StatusFlag::Negative; "dec_adc_high_nibble_carry")]
+    fn adc_decimal_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: StatusFlag)
     {
         let mut memory = [op::ADC_IMM, m];
         let mut cpu = Cpu::new();
@@ -1190,27 +1189,27 @@ mod operation_tests {
         
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, expected_a);
-        assert_eq!(cpu.status, expected_status | StatusFlag::Decimal as u8);
+        assert_eq!(cpu.status, expected_status | StatusFlag::Decimal);
     }
 
-    #[test_case(0x09, 0x05, true, 0x04, StatusFlag::Carry as u8; "dec_sbc_simple")]
-    #[test_case(0x10, 0x01, true, 0x09, StatusFlag::Carry as u8; "dec_sbc_low_nibble_borrow")]
-    #[test_case(0x00, 0x01, true, 0x99, StatusFlag::Negative as u8; "dec_sbc_full_borrow")]
-    #[test_case(0x00, 0x01, true, 0x99, StatusFlag::Negative as u8; "dec_sbc_flags_match_binary")]
-    #[test_case(0x50, 0x25, true, 0x25, StatusFlag::Carry as u8; "dec_sbc_carry_in_as_no_borrow")]
-    #[test_case(0x05, 0x05, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "dec_sbc_zero_result")]
-    #[test_case(0x50, 0x25, false, 0x24, StatusFlag::Carry as u8; "dec_sbc_extra_borrow_cin0")]
-    #[test_case(0xff, 0x00, true, 0xff, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_sbc_invalid_bcd")]
-    #[test_case(0x00, 0x00, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "dec_sbc_00_minus_00")]
-    #[test_case(0x00, 0x01, true, 0x99, StatusFlag::Negative as u8; "dec_sbc_00_minus_01")]
-    #[test_case(0x10, 0x01, true, 0x09, StatusFlag::Carry as u8; "dec_sbc_10_minus_01")]
-    #[test_case(0x10, 0x10, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "dec_sbc_10_minus_10")]
-    #[test_case(0x99, 0x01, true, 0x98, StatusFlag::Carry as u8 | StatusFlag::Negative as u8; "dec_sbc_99_minus_01")]
-    #[test_case(0x00, 0x99, true, 0x01, 0; "dec_sbc_00_minus_99")]
-    #[test_case(0x50, 0x51, true, 0x99, StatusFlag::Negative as u8; "dec_sbc_50_minus_51")]
-    #[test_case(0x99, 0x99, true, 0x00, StatusFlag::Carry as u8 | StatusFlag::Zero as u8; "dec_sbc_99_minus_99")]
-    #[test_case(0x80, 0x01, true, 0x79, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8; "dec_sbc_negative_overflow")]
-    fn sbc_decimal_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: u8)
+    #[test_case(0x09, 0x05, true, 0x04, StatusFlag::Carry; "dec_sbc_simple")]
+    #[test_case(0x10, 0x01, true, 0x09, StatusFlag::Carry; "dec_sbc_low_nibble_borrow")]
+    #[test_case(0x00, 0x01, true, 0x99, StatusFlag::Negative; "dec_sbc_full_borrow")]
+    #[test_case(0x00, 0x01, true, 0x99, StatusFlag::Negative; "dec_sbc_flags_match_binary")]
+    #[test_case(0x50, 0x25, true, 0x25, StatusFlag::Carry; "dec_sbc_carry_in_as_no_borrow")]
+    #[test_case(0x05, 0x05, true, 0x00, StatusFlag::Carry |  StatusFlag::Zero; "dec_sbc_zero_result")]
+    #[test_case(0x50, 0x25, false, 0x24, StatusFlag::Carry; "dec_sbc_extra_borrow_cin0")]
+    #[test_case(0xff, 0x00, true, 0xff, StatusFlag::Carry | StatusFlag::Negative; "dec_sbc_invalid_bcd")]
+    #[test_case(0x00, 0x00, true, 0x00, StatusFlag::Carry |  StatusFlag::Zero; "dec_sbc_00_minus_00")]
+    #[test_case(0x00, 0x01, true, 0x99, StatusFlag::Negative; "dec_sbc_00_minus_01")]
+    #[test_case(0x10, 0x01, true, 0x09, StatusFlag::Carry; "dec_sbc_10_minus_01")]
+    #[test_case(0x10, 0x10, true, 0x00, StatusFlag::Carry |  StatusFlag::Zero; "dec_sbc_10_minus_10")]
+    #[test_case(0x99, 0x01, true, 0x98, StatusFlag::Carry | StatusFlag::Negative; "dec_sbc_99_minus_01")]
+    #[test_case(0x00, 0x99, true, 0x01, StatusFlag::empty(); "dec_sbc_00_minus_99")]
+    #[test_case(0x50, 0x51, true, 0x99, StatusFlag::Negative; "dec_sbc_50_minus_51")]
+    #[test_case(0x99, 0x99, true, 0x00, StatusFlag::Carry |  StatusFlag::Zero; "dec_sbc_99_minus_99")]
+    #[test_case(0x80, 0x01, true, 0x79, StatusFlag::Carry | StatusFlag::Overflow; "dec_sbc_negative_overflow")]
+    fn sbc_decimal_mode(a: u8, m: u8, c: bool, expected_a: u8, expected_status: StatusFlag)
     {
         let mut memory = [op::SBC_IMM, m];
         let mut cpu = Cpu::new();
@@ -1220,7 +1219,7 @@ mod operation_tests {
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 2);
         assert_eq!(cpu.register_a, expected_a);
-        assert_eq!(cpu.status, expected_status | StatusFlag::Decimal as u8);
+        assert_eq!(cpu.status, expected_status | StatusFlag::Decimal);
     }
 
 }
@@ -1244,7 +1243,7 @@ mod jump_tests {
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 5);
         assert_eq!(cpu.register_a, 0);
         assert_eq!(cpu.program_counter, 0xCDAB);
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
     }
 
     #[test]
@@ -1260,7 +1259,7 @@ mod jump_tests {
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.register_a, 0);
         assert_eq!(cpu.program_counter, 0x0005);
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
     }
     
     #[test]
@@ -1332,14 +1331,14 @@ mod jump_tests {
         let mut cpu = Cpu::new();
         cpu.reset();
         cpu.program_counter = 0x8000;
-        cpu.status = StatusFlag::Overflow as u8 | StatusFlag::Zero as u8;
+        cpu.status = StatusFlag::Overflow |  StatusFlag::Zero;
         assert_eq!(cpu.stack_pointer, 0xFD, "Stack pointer before");
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 7, "Operation cycles");
         assert_eq!(cpu.program_counter, 0xCDAB, "PC after BRK");
         assert_eq!(cpu.stack_pointer, 0xFA, "Stack pointer after BRK");
-        assert_eq!(cpu.status, StatusFlag::Overflow as u8 | StatusFlag::Zero as u8 | StatusFlag::InterruptDisable as u8, "Current status");
-        assert_eq!(memory[0x01FB], StatusFlag::Overflow as u8 | StatusFlag::Zero as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8, "Status on stack");
+        assert_eq!(cpu.status, StatusFlag::Overflow |  StatusFlag::Zero | StatusFlag::InterruptDisable, "Current status");
+        assert_eq!(StatusFlag::from_bits_retain(memory[0x01FB]), StatusFlag::Overflow |  StatusFlag::Zero | StatusFlag::Break | StatusFlag::Unused, "Status on stack");
         assert_eq!(memory[0x01FC], 0x02, "pc low on stack");
         assert_eq!(memory[0x01FD], 0x80, "pc high on stack");
     }
@@ -1351,20 +1350,20 @@ mod jump_tests {
         memory[0x5000] = op::RTI;
         memory[0xFFFE] = 0xAB;
         memory[0xFFFF] = 0xCD;
-        memory[0x01FB] = StatusFlag::Overflow as u8 | StatusFlag::Zero as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8;
+        memory[0x01FB] = (StatusFlag::Overflow |  StatusFlag::Zero | StatusFlag::Break | StatusFlag::Unused).bits();
         memory[0x01FC] = 0x02;
         memory[0x01FD] = 0x80;
 
         let mut cpu = Cpu::new();
         cpu.reset();
         cpu.program_counter = 0x5000;
-        cpu.status = StatusFlag::Negative as u8;
+        cpu.status = StatusFlag::Negative;
         cpu.stack_pointer = 0xFA;
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 6, "Operation cycles");
         assert_eq!(cpu.program_counter, 0x8002, "PC after RTI");
         assert_eq!(cpu.stack_pointer, 0xFD, "Stack pointer after RTI");
-        assert_eq!(cpu.status, StatusFlag::Overflow as u8 | StatusFlag::Zero as u8 | StatusFlag::Unused as u8, "Current status");
+        assert_eq!(cpu.status, StatusFlag::Overflow |  StatusFlag::Zero | StatusFlag::Unused, "Current status");
     }
 }
 
@@ -1388,7 +1387,7 @@ mod stack_tests {
         assert_eq!(cpu.stack_pointer, 0xFC);
         assert_eq!(memory[0x01FD], 0xAB);
         assert_eq!(cpu.register_a, 0xAB);
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
 
         cpu.register_a = 0xCD;
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
@@ -1396,7 +1395,7 @@ mod stack_tests {
         assert_eq!(memory[0x01FC], 0xCD);
         assert_eq!(memory[0x01FD], 0xAB);
         assert_eq!(cpu.register_a, 0xCD);
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
     }
     
     #[test]
@@ -1409,18 +1408,18 @@ mod stack_tests {
         memory[0x00] = op::PHP;
         memory[0x01] = op::PHP;
 
-        cpu.status = StatusFlag::Carry as u8 | StatusFlag::Overflow as u8;
+        cpu.status = StatusFlag::Carry | StatusFlag::Overflow;
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.stack_pointer, 0xFC);
-        assert_eq!(memory[0x01FD], StatusFlag::Carry as u8 | StatusFlag::Overflow as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Overflow as u8);
+        assert_eq!(StatusFlag::from_bits_retain(memory[0x01FD]), StatusFlag::Carry | StatusFlag::Overflow | StatusFlag::Break | StatusFlag::Unused);
+        assert_eq!(cpu.status, StatusFlag::Carry | StatusFlag::Overflow);
 
-        cpu.status = 0;
+        cpu.status = StatusFlag::empty();
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 3);
         assert_eq!(cpu.stack_pointer, 0xFB);
-        assert_eq!(memory[0x01FD], StatusFlag::Carry as u8 | StatusFlag::Overflow as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8);
-        assert_eq!(memory[0x01FC], StatusFlag::Break as u8 | StatusFlag::Unused as u8);
-        assert_eq!(cpu.status, 0);
+        assert_eq!(StatusFlag::from_bits_retain(memory[0x01FD]), StatusFlag::Carry | StatusFlag::Overflow | StatusFlag::Break | StatusFlag::Unused);
+        assert_eq!(StatusFlag::from_bits_retain(memory[0x01FC]), StatusFlag::Break | StatusFlag::Unused);
+        assert!(cpu.status.is_empty());
     }
     
     #[test]
@@ -1443,17 +1442,17 @@ mod stack_tests {
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.register_a, 0);
         assert_eq!(cpu.stack_pointer, 0xFB);
-        assert_eq!(cpu.status, StatusFlag::Zero as u8);
+        assert_eq!(cpu.status,  StatusFlag::Zero);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.register_a, 0b1000_0000);
         assert_eq!(cpu.stack_pointer, 0xFC);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.register_a, 0b0101_0101);
         assert_eq!(cpu.stack_pointer, 0xFD);
-        assert_eq!(cpu.status, 0);
+        assert!(cpu.status.is_empty());
     }
 
     
@@ -1462,29 +1461,29 @@ mod stack_tests {
         let mut memory = [0u8; 0x0200];
         let mut cpu = Cpu::new();
         cpu.reset();
-        cpu.status = 0;
+        cpu.status = StatusFlag::empty();
         memory[0x0000] = op::PLP;
         memory[0x0001] = op::PLP;
         memory[0x0002] = op::PLP;
 
-        memory[0x01FB] = StatusFlag::Negative as u8 | StatusFlag::Break as u8;
-        memory[0x01FC] = StatusFlag::Break as u8;
-        memory[0x01FD] = StatusFlag::Carry as u8 | StatusFlag::Decimal as u8 | StatusFlag::Break as u8 | StatusFlag::Unused as u8;
+        memory[0x01FB] = (StatusFlag::Negative | StatusFlag::Break).bits();
+        memory[0x01FC] = (StatusFlag::Break).bits();
+        memory[0x01FD] = (StatusFlag::Carry | StatusFlag::Decimal | StatusFlag::Break | StatusFlag::Unused).bits();
 
         assert_eq!(cpu.stack_pointer, 0xFD);
         cpu.stack_pointer = 0xFA;
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.stack_pointer, 0xFB);
-        assert_eq!(cpu.status, StatusFlag::Negative as u8 | StatusFlag::Unused as u8);
+        assert_eq!(cpu.status, StatusFlag::Negative | StatusFlag::Unused);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.stack_pointer, 0xFC);
-        assert_eq!(cpu.status, StatusFlag::Unused as u8);
+        assert_eq!(cpu.status, StatusFlag::Unused);
 
         assert_eq!(cpu.run_step(&mut memory).unwrap(), 4);
         assert_eq!(cpu.stack_pointer, 0xFD);
-        assert_eq!(cpu.status, StatusFlag::Carry as u8 | StatusFlag::Decimal as u8 | StatusFlag::Unused as u8);
+        assert_eq!(cpu.status, StatusFlag::Carry | StatusFlag::Decimal | StatusFlag::Unused);
     }
 }
 

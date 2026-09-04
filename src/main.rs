@@ -1,11 +1,13 @@
 use oxidize6502::bus;
 use oxidize6502::cpu::Cpu;
 
+use std::time::Instant;
+
 
 fn main() {
     println!("Execute 6502 functional tests..");
     let mut memory = [0; bus::MEMORY_SIZE];
-    load_binary(&mut memory, "tests\\6502_functional_test.bin", 0).unwrap();
+    bus::load_binary(&mut memory, "tests\\6502_functional_test.bin", 0).unwrap();
     let mut cpu = Cpu::new();
     cpu.reset();
     cpu.program_counter = 0x0400;
@@ -13,6 +15,7 @@ fn main() {
 
     let mut previous_address: u16 = 0xFFFF; 
     let mut count = 0u8;
+    let start = Instant::now();
 
     for _ in 0..100_000_000
     {
@@ -34,13 +37,9 @@ fn main() {
             count = 0;
         }
     }
+    let duration = start.elapsed();
+
+    println!("Elapsed: {:?}", duration);
 }
 
 
-fn load_binary(mem: &mut [u8], path: &str, load_addr: u16) -> std::io::Result<()> {
-    let data = std::fs::read(path)?;
-    let start = load_addr as usize;
-    let end = start + data.len();
-    mem[start..end].copy_from_slice(&data);
-    Ok(())
-}

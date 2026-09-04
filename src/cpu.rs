@@ -2,7 +2,7 @@
  * https://6502.org/users/obelisk/6502/reference.html
  */
 
- use crate::{address::{AddressMode}, bus::Bus, instructions::{INSTRUCTION_SET, Instruction}};
+ use crate::{address::{AddressMode, AddressResult}, bus::Bus, instructions::{INSTRUCTION_SET, Instruction}};
 
 use bitflags::bitflags;
 
@@ -18,6 +18,12 @@ bitflags! {
         const Zero =      0x02;
         const Carry =     0x01;
     }
+}
+
+#[derive(Debug)]
+pub enum OperationError {
+    AddressModeNotSupported,
+    OperationNotSupported(u8),
 }
 
 pub struct Cpu {
@@ -55,113 +61,45 @@ impl Cpu {
         self.status = StatusFlag::empty();
     }
 
-    pub fn run_step(&mut self, bus: &mut impl Bus<u16>) -> Result<u8, String> {
+    pub fn run_step(&mut self, bus: &mut impl Bus<u16>) -> Result<u8, OperationError> {
         let next_instruction = bus.read_byte(self.program_counter);
         self.program_counter += 1;
 
         match &INSTRUCTION_SET[next_instruction as usize] {
             Some(instruction) => {
-                Ok(self.execute_instruction(instruction, bus))
+                self.execute_instruction(instruction, bus)
             },
             None => {
-                Err(format!("Operation {:02X} not supported", next_instruction))
+                Err(OperationError::OperationNotSupported(next_instruction))
             }
         }
     }
 
-    fn execute_instruction(&mut self, instruction: &Instruction, bus: &mut impl Bus<u16>) -> u8 {
+    fn execute_instruction(&mut self, instruction: &Instruction, bus: &mut impl Bus<u16>) -> Result<u8, OperationError> {
         use crate::instructions::Mnemonic::*;
-        let mut branch_taken: bool = false;
+        let mut branch_cycles: u8 = 0;
         let address_result = instruction.address_mode.get_address(self, bus);
+
         match instruction.mnemonic {
-            ADC => { 
-                let a = self.register_a as u16;
-                let m = bus.read_byte(address_result.address) as u16;
-                let c = self.is_set(StatusFlag::Carry) as u16;
-                let mut result = a + m + c;
-
-                self.set_status(StatusFlag::Negative, result & 0x80 != 0);
-                // Overflow occurs when signs before are equal, but not afterwards
-                self.set_status(StatusFlag::Overflow, (!(a ^ m) & (a ^ result) & 0x80) != 0);
-                self.set_status(StatusFlag::Zero, result & 0xFF == 0);
-
-                if self.is_set(StatusFlag::Decimal) {
-                    if (a & 0x0F) + (m & 0x0F) + c > 0x09 {
-                        result += 0x06;
-                    }
-
-                    let carry = result > 0x99;
-                    if carry {
-                        result += 0x60;
-                    }
-
-                    self.set_status(StatusFlag::Carry, carry);
-                }
-                else {
-                    self.set_status(StatusFlag::Carry, result > 0xFF);
-                }
-
-                self.register_a = result as u8;
-            }, 
+            ADC => self.execute_adc(bus, &address_result)?, 
             AND => { 
-                let value = bus.read_byte(address_result.address);
-                self.register_a &= value;
-                self.set_status(StatusFlag::Negative, self.register_a & 0x80 != 0);
-                self.set_status(StatusFlag::Zero, self.register_a == 0);
+                self.register_a &= bus.read_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?);
+                self.set_status_zn(self.register_a);
             }, 
-            ASL => {
-                if instruction.address_mode == AddressMode::Accumulator {
-                    self.register_a = self.asl_value(self.register_a);
-                } 
-                else {
-                    let mut value = bus.read_byte(address_result.address);
-                    value = self.asl_value(value);
-                    bus.write_byte(address_result.address, value);
-                }
-            }, 
-            BCC => { 
-                if !self.is_set(StatusFlag::Carry) {
-                    self.program_counter = address_result.address;
-                    branch_taken = true;
-                }
-            }, 
-            BCS => {  
-                if self.is_set(StatusFlag::Carry) {
-                    self.program_counter = address_result.address;
-                    branch_taken = true;
-                }
-            }, 
-            BEQ => {
-                if self.is_set(StatusFlag::Zero) {
-                    self.program_counter = address_result.address;
-                    branch_taken = true;
-                }
-            }, 
+            ASL => self.read_update_write(&address_result, bus, Cpu::asl_value)?, 
+            BCC => branch_cycles = self.execute_branch(!self.is_set(StatusFlag::Carry), &address_result)?, 
+            BCS => branch_cycles = self.execute_branch(self.is_set(StatusFlag::Carry), &address_result)?,
+            BEQ => branch_cycles = self.execute_branch(self.is_set(StatusFlag::Zero), &address_result)?, 
             BIT => { 
-                let m = bus.read_byte(address_result.address);
+                let m = bus.read_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?);
                 let value = self.register_a & m;
                 self.set_status(StatusFlag::Zero, value == 0);
                 self.set_status(StatusFlag::Overflow, (m >> 6) & 1 == 1);
                 self.set_status(StatusFlag::Negative, m & 0x80 != 0);
             }, 
-            BMI => {  
-                if self.is_set(StatusFlag::Negative) {
-                    self.program_counter = address_result.address;
-                    branch_taken = true;
-                }
-            }, 
-            BNE => {  
-                if !self.is_set(StatusFlag::Zero) {
-                    self.program_counter = address_result.address;
-                    branch_taken = true;
-                }
-            }, 
-            BPL => {  
-                if !self.is_set(StatusFlag::Negative) {
-                    self.program_counter = address_result.address;
-                    branch_taken = true;
-                }
-            }, 
+            BMI => branch_cycles = self.execute_branch(self.is_set(StatusFlag::Negative), &address_result)?, 
+            BNE => branch_cycles = self.execute_branch(!self.is_set(StatusFlag::Zero), &address_result)?, 
+            BPL => branch_cycles = self.execute_branch(!self.is_set(StatusFlag::Negative), &address_result)?, 
             BRK => {
                 self.program_counter += 1; // Discard next byte
                 self.push_stack(bus, (self.program_counter >> 8) as u8);
@@ -171,104 +109,62 @@ impl Cpu {
                 self.program_counter = bus.read_word_little_endian(0xFFFE);
                 self.status |= StatusFlag::InterruptDisable;
             }
-            BVC => {
-                if !self.is_set(StatusFlag::Overflow) {
-                    self.program_counter = address_result.address;
-                    branch_taken = true;
-                }
-            }, 
-            BVS => {
-                if self.is_set(StatusFlag::Overflow) {
-                    self.program_counter = address_result.address;
-                    branch_taken = true;
-                }
-            }, 
-            CLC => { self.set_status(StatusFlag::Carry, false); },
-            CLD => { self.set_status(StatusFlag::Decimal, false); },
-            CLI => { self.set_status(StatusFlag::InterruptDisable, false); },
-            CLV => { self.set_status(StatusFlag::Overflow, false); },
-            CMP => { self.compare(self.register_a, bus.read_byte(address_result.address)) }, 
-            CPX => { self.compare(self.register_x, bus.read_byte(address_result.address)) }, 
-            CPY => { self.compare(self.register_y, bus.read_byte(address_result.address)) }, 
+            BVC => branch_cycles = self.execute_branch(!self.is_set(StatusFlag::Overflow), &address_result)?, 
+            BVS => branch_cycles = self.execute_branch(self.is_set(StatusFlag::Overflow), &address_result)?, 
+            CLC => self.set_status(StatusFlag::Carry, false),
+            CLD => self.set_status(StatusFlag::Decimal, false),
+            CLI => self.set_status(StatusFlag::InterruptDisable, false),
+            CLV => self.set_status(StatusFlag::Overflow, false),
+            CMP => self.compare(self.register_a, bus, &address_result)?, 
+            CPX => self.compare(self.register_x, bus, &address_result)?, 
+            CPY => self.compare(self.register_y, bus, &address_result)?, 
             DEC => { 
-                let value = bus.read_byte(address_result.address);
-                bus.write_byte(address_result.address, self.decrement_value(value)); 
+                let address = address_result.address().ok_or(OperationError::AddressModeNotSupported)?;
+                let value = bus.read_byte(address).wrapping_sub(1);
+                bus.write_byte(address, value); 
+                self.set_status_zn(value);
             }, 
-            DEX => { self.register_x = self.decrement_value(self.register_x); }, 
-            DEY => { self.register_y = self.decrement_value(self.register_y); }, 
-            EOR => { 
-                let value = bus.read_byte(address_result.address);
-                let result = self.register_a ^ value;
-                self.set_status(StatusFlag::Negative, result & 0x80 != 0);
-                self.set_status(StatusFlag::Zero, result == 0);
-                self.register_a = result;
-            }, 
+            DEX => self.set_register_x(self.register_x.wrapping_sub(1)), 
+            DEY => self.set_register_y(self.register_y.wrapping_sub(1)), 
+            EOR => self.set_accumulator(self.register_a ^ bus.read_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?)), 
             INC => { 
-                let value = bus.read_byte(address_result.address);
-                bus.write_byte(address_result.address, self.increment_value(value)); 
+                let address = address_result.address().ok_or(OperationError::AddressModeNotSupported)?;
+                let value = bus.read_byte(address).wrapping_add(1);
+                bus.write_byte(address, value); 
+                self.set_status_zn(value);
             }, 
-            INX => { self.register_x = self.increment_value(self.register_x); }, 
-            INY => { self.register_y = self.increment_value(self.register_y); }, 
-            JMP => { self.program_counter = address_result.address },
+            INX => self.set_register_x(self.register_x.wrapping_add(1)), 
+            INY => self.set_register_y(self.register_y.wrapping_add(1)),
+            JMP => self.program_counter = address_result.address().ok_or(OperationError::AddressModeNotSupported)?,
             JSR => { 
                 let pc = self.program_counter - 1;
                 self.push_stack(bus, (pc >> 8) as u8);
                 self.push_stack(bus, (pc & 0xFF) as u8);
-                self.program_counter = address_result.address;
+                self.program_counter = address_result.address().ok_or(OperationError::AddressModeNotSupported)?;
             }, 
-            LDA => { self.register_a = self.load_value(address_result.address, bus); },
-            LDX => { self.register_x = self.load_value(address_result.address, bus); },
-            LDY => { self.register_y = self.load_value(address_result.address, bus); },
-            LSR => { 
-                if instruction.address_mode == AddressMode::Accumulator {
-                    self.register_a = self.lsr_value(self.register_a);
-                } 
-                else {
-                    let mut value = bus.read_byte(address_result.address);
-                    value = self.lsr_value(value);
-                    bus.write_byte(address_result.address, value);
-                } 
-            }, 
+            LDA => self.set_accumulator(bus.read_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?)),
+            LDX => self.set_register_x(bus.read_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?)),
+            LDY => self.set_register_y(bus.read_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?)),
+            LSR => self.read_update_write(&address_result, bus, Cpu::lsr_value)?, 
             NOP => { /* do nothing */ }
             ORA => { 
-                let value = bus.read_byte(address_result.address);
+                let value = bus.read_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?);
                 self.register_a |= value;
-                self.set_status(StatusFlag::Zero, self.register_a == 0);
-                self.set_status(StatusFlag::Negative, self.register_a & 0x80 != 0);
+                self.set_status_zn(self.register_a);
              }, 
-            PHA => { self.push_stack(bus, self.register_a); }, 
-            PHP => { 
-                let status = self.status | StatusFlag::Unused | StatusFlag::Break;
-                self.push_stack(bus, status.bits()); }, 
-            PLA => { 
-                self.register_a = self.pull_stack(bus);
-                self.set_status(StatusFlag::Zero, self.register_a == 0);
-                self.set_status(StatusFlag::Negative, self.register_a & 0x80 != 0);
+            PHA => self.push_stack(bus, self.register_a), 
+            PHP => self.push_stack(bus, (self.status | StatusFlag::Unused | StatusFlag::Break).bits()), 
+            PLA => {
+                let value = self.pull_stack(bus);
+                self.set_accumulator(value);
             }, 
             PLP => { 
                 let status = StatusFlag::from_bits_retain(self.pull_stack(bus));
                 // Discard Break, set unused high
                 self.status = status & !StatusFlag::Break | StatusFlag::Unused;
             }, 
-            ROL => {
-                if instruction.address_mode == AddressMode::Accumulator {
-                    self.register_a = self.rol_value(self.register_a);
-                } 
-                else {
-                    let mut value = bus.read_byte(address_result.address);
-                    value = self.rol_value(value);
-                    bus.write_byte(address_result.address, value);
-                } 
-            }, 
-            ROR => { 
-                if instruction.address_mode == AddressMode::Accumulator {
-                    self.register_a = self.ror_value(self.register_a);
-                } 
-                else {
-                    let mut value = bus.read_byte(address_result.address);
-                    value = self.ror_value(value);
-                    bus.write_byte(address_result.address, value);
-                }  }, 
+            ROL => self.read_update_write(&address_result, bus, Cpu::rol_value)?, 
+            ROR => self.read_update_write(&address_result, bus, Cpu::ror_value)?, 
             RTI => {
                 let status = StatusFlag::from_bits_retain(self.pull_stack(bus));
                 let pc_low = self.pull_stack(bus) as u16;
@@ -282,133 +178,146 @@ impl Cpu {
                 self.program_counter = pc_high << 8 | pc_low;
                 self.program_counter += 1;
             }, 
-            SBC => { 
-                let a = self.register_a as i16;
-                let m = bus.read_byte(address_result.address) as i16;
-                let c = self.is_set(StatusFlag::Carry) as i16;
-                let binary_result = a - m - (1 -  c);
-
-                self.set_status(StatusFlag::Negative, binary_result & 0x80 != 0);
-                // Overflow occurs when signs before are different and also afterwards
-                self.set_status(StatusFlag::Overflow, ((a ^ m) & (a ^ binary_result) & 0x80) != 0);
-                self.set_status(StatusFlag::Zero, binary_result & 0xFF == 0);
-
-                if self.is_set(StatusFlag::Decimal) {
-                    let mut decimal_result = binary_result;
-
-                    if (a & 0x0F) - (m & 0x0F) - (1 - c) < 0 {
-                        decimal_result -= 0x06;
-                    }
-
-                    let no_borrow = binary_result >= 0;
-
-                    if !no_borrow {
-                        decimal_result -= 0x60;
-                    }
-
-                    self.set_status(StatusFlag::Carry, no_borrow);
-
-                    self.register_a = decimal_result as u8;
-                } else {
-                    self.set_status(StatusFlag::Carry, binary_result >= 0);
-                    self.register_a = binary_result as u8;
-                }
-            }, 
-            SEC => { self.set_status(StatusFlag::Carry, true); }, 
-            SED => { self.set_status(StatusFlag::Decimal, true); }, 
-            SEI => { self.set_status(StatusFlag::InterruptDisable, true); }, 
-            STA => { bus.write_byte(address_result.address, self.register_a); }, 
-            STX => { bus.write_byte(address_result.address, self.register_x); }, 
-            STY => { bus.write_byte(address_result.address, self.register_y); }, 
-            TAX => { 
-                self.register_x = self.register_a;
-                self.set_status(StatusFlag::Zero, self.register_x == 0);
-                self.set_status(StatusFlag::Negative, self.register_x & 0x80 != 0);
-            }, 
-            TAY => { 
-                self.register_y = self.register_a;
-                self.set_status(StatusFlag::Zero, self.register_y == 0);
-                self.set_status(StatusFlag::Negative, self.register_y & 0x80 != 0);
-            }, 
-            TSX => { 
-                self.register_x = self.stack_pointer;
-                self.set_status(StatusFlag::Zero, self.register_x == 0);
-                self.set_status(StatusFlag::Negative, self.register_x & 0x80 != 0);
-            }, 
-            TXA => { 
-                self.register_a = self.register_x;
-                self.set_status(StatusFlag::Zero, self.register_a == 0);
-                self.set_status(StatusFlag::Negative, self.register_a & 0x80 != 0);
-            }, 
-            TXS => { self.stack_pointer = self.register_x; }, 
-            TYA => { 
-                self.register_a = self.register_y;
-                self.set_status(StatusFlag::Zero, self.register_a == 0);
-                self.set_status(StatusFlag::Negative, self.register_a & 0x80 != 0);
-            }
+            SBC => self.execute_sbc(bus, &address_result)?, 
+            SEC => self.set_status(StatusFlag::Carry, true), 
+            SED => self.set_status(StatusFlag::Decimal, true), 
+            SEI => self.set_status(StatusFlag::InterruptDisable, true), 
+            STA => bus.write_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?, self.register_a), 
+            STX => bus.write_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?, self.register_x), 
+            STY => bus.write_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?, self.register_y), 
+            TAX => self.set_register_x(self.register_a), 
+            TAY => self.set_register_y(self.register_a), 
+            TSX => self.set_register_x(self.stack_pointer), 
+            TXA => self.set_accumulator(self.register_x), 
+            TXS => self.stack_pointer = self.register_x, 
+            TYA => self.set_accumulator(self.register_y),
         }
 
-        if instruction.address_mode == AddressMode::Relative {
-            if !branch_taken {
-                return instruction.cycles;
-            }
-            if instruction.can_cross_page && address_result.page_crossed {
-                return instruction.cycles + 2;
-            }
-            return instruction.cycles + 1;
-        }
-
-        if instruction.can_cross_page && address_result.page_crossed {
+        
+        Ok(if instruction.address_mode == AddressMode::Relative {
+            instruction.cycles + branch_cycles
+        } else if instruction.can_cross_page && address_result.has_crossed_page() {
             instruction.cycles + 1
         } else {
             instruction.cycles
+        })
+    }
+
+    fn execute_branch(&mut self, condition: bool, address_result: &AddressResult) -> Result<u8, OperationError> {
+        if condition {
+            self.program_counter = address_result.address().ok_or(OperationError::AddressModeNotSupported)?;
+            return Ok(if let AddressResult::MemoryWithPageCross(_) = address_result { 2 } else { 1 } );
         }
-    }
-
-    fn load_value(&mut self, address: u16, bus: &impl Bus<u16>) -> u8 {
-        let value = bus.read_byte(address);
-        self.set_status(StatusFlag::Negative, (value >> 7) == 1);
-        self.set_status(StatusFlag::Zero, value == 0);
-        return value;
+        Ok(0)
     }
     
-    fn asl_value(&mut self, value: u8) -> u8 {
+    fn read_update_write(&mut self, address_result: &AddressResult, bus: &mut impl Bus<u16>, update_fn: impl Fn(&mut Cpu, u8) -> u8) -> Result<(), OperationError> {
+        if matches!(address_result, AddressResult::Accumulator) {
+            self.register_a = update_fn(self, self.register_a);
+        } 
+        else {
+            let address = address_result.address().ok_or(OperationError::AddressModeNotSupported)?;
+            let value = bus.read_byte(address);
+            bus.write_byte(address, update_fn(self, value));
+        }  
+        Ok(())
+    }
+
+    fn execute_adc(&mut self, bus: &mut impl Bus<u16>, address_result: &AddressResult) -> Result<(), OperationError> {
+        let a = self.register_a as u16;
+        let m = bus.read_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?) as u16;
+        let c = self.is_set(StatusFlag::Carry) as u16;
+        let result = a + m + c;
+        self.set_status(StatusFlag::Negative, result & 0x80 != 0);
+        // Overflow occurs when signs before are equal, but not afterwards
+        self.set_status(StatusFlag::Overflow, (!(a ^ m) & (a ^ result) & 0x80) != 0);
+        self.set_status(StatusFlag::Zero, result & 0xFF == 0);
+        if self.is_set(StatusFlag::Decimal) {
+            let mut decimal_result = result;
+            if (a & 0x0F) + (m & 0x0F) + c > 0x09 {
+                decimal_result += 0x06;
+            }
+    
+            let carry = decimal_result > 0x99;
+            if carry {
+                decimal_result += 0x60;
+            }
+    
+            self.set_status(StatusFlag::Carry, carry);
+            self.register_a = decimal_result as u8;
+        }
+        else {
+            self.set_status(StatusFlag::Carry, result > 0xFF);
+            self.register_a = result as u8;
+        }
+        Ok(())
+    }
+    
+    fn execute_sbc(&mut self, bus: &mut impl Bus<u16>, address_result: &crate::address::AddressResult) -> Result<(), OperationError> {
+        let a = self.register_a as i16;
+        let m = bus.read_byte(address_result.address().ok_or(OperationError::AddressModeNotSupported)?) as i16;
+        let c = self.is_set(StatusFlag::Carry) as i16;
+        let binary_result = a - m - (1 -  c);
+        self.set_status(StatusFlag::Negative, binary_result & 0x80 != 0);
+        // Overflow occurs when signs before are different and also afterwards
+        self.set_status(StatusFlag::Overflow, ((a ^ m) & (a ^ binary_result) & 0x80) != 0);
+        self.set_status(StatusFlag::Zero, binary_result & 0xFF == 0);
+        if self.is_set(StatusFlag::Decimal) {
+            let mut decimal_result = binary_result;
+    
+            if (a & 0x0F) - (m & 0x0F) - (1 - c) < 0 {
+                decimal_result -= 0x06;
+            }
+    
+            let no_borrow = binary_result >= 0;
+    
+            if !no_borrow {
+                decimal_result -= 0x60;
+            }
+    
+            self.set_status(StatusFlag::Carry, no_borrow);
+    
+            self.register_a = decimal_result as u8;
+        } else {
+            self.set_status(StatusFlag::Carry, binary_result >= 0);
+            self.register_a = binary_result as u8;
+        }
+        Ok(())
+    }
+    
+    fn asl_value(cpu: &mut Self, value: u8) -> u8 {
         let new_value = value << 1;
-        self.set_status(StatusFlag::Carry, value & 0x80 != 0);
-        self.set_status(StatusFlag::Negative, new_value & 0x80 != 0);
-        self.set_status(StatusFlag::Zero, new_value == 0);
-        return new_value;
+        cpu.set_status(StatusFlag::Carry, value & 0x80 != 0);
+        cpu.set_status_zn(new_value);
+        return new_value; 
     }
     
-    fn lsr_value(&mut self, value: u8) -> u8 {
+    fn lsr_value(cpu: &mut Self, value: u8) -> u8 {
         let new_value = value >> 1;
-        self.set_status(StatusFlag::Carry, value & 1 == 1);
-        self.set_status(StatusFlag::Negative, false);
-        self.set_status(StatusFlag::Zero, new_value == 0);
+        cpu.set_status(StatusFlag::Carry, value & 1 == 1);
+        cpu.set_status_zn(new_value);
         return new_value;
     }
 
-    fn rol_value(&mut self, value: u8) -> u8 {
+    fn rol_value(cpu: &mut Self, value: u8) -> u8 {
         let mut new_value = value << 1;
-        if self.is_set(StatusFlag::Carry) {
+        if cpu.is_set(StatusFlag::Carry) {
             new_value |= 1;
         }
 
-        self.set_status(StatusFlag::Carry, value & 0x80 != 0);
-        self.set_status(StatusFlag::Negative, new_value & 0x80 != 0);
-        self.set_status(StatusFlag::Zero, new_value == 0);
+        cpu.set_status(StatusFlag::Carry, value & 0x80 != 0);
+        cpu.set_status_zn(new_value);
         new_value
     }
 
-    fn ror_value(&mut self, value: u8) -> u8 {
+    fn ror_value(cpu: &mut Self, value: u8) -> u8 {
         let mut new_value = value >> 1;
-        if self.is_set(StatusFlag::Carry) {
+        if cpu.is_set(StatusFlag::Carry) {
             new_value |= 1 << 7;
         }
 
-        self.set_status(StatusFlag::Carry, value & 1 == 1);
-        self.set_status(StatusFlag::Negative, new_value & 0x80 != 0);
-        self.set_status(StatusFlag::Zero, new_value == 0);
+        cpu.set_status(StatusFlag::Carry, value & 1 == 1);
+        cpu.set_status_zn(new_value);
         new_value
     }
 
@@ -425,36 +334,40 @@ impl Cpu {
     }
 
     fn set_status(&mut self, key: StatusFlag, value: bool) {
-        if value {
-            self.status |= key;
-        } else {
-            self.status &= !key
-        }
+        self.status.set(key, value);
     }
 
     fn is_set(&self, key: StatusFlag) -> bool {
         self.status.contains(key)
     }
-    
-    fn increment_value(&mut self, value: u8) -> u8 {
-        let increment_value = value.wrapping_add(1);
-        self.set_status(StatusFlag::Negative, increment_value & 0x80 != 0);
-        self.set_status(StatusFlag::Zero, increment_value == 0);
-        return increment_value;
-    }
-
-    fn decrement_value(&mut self, value: u8) -> u8 {
-        let decrement_value = value.wrapping_sub(1);
-        self.set_status(StatusFlag::Negative, decrement_value & 0x80 != 0);
-        self.set_status(StatusFlag::Zero, decrement_value == 0);
-        return decrement_value;
-    }
-    
-    fn compare(&mut self, register_value: u8, value: u8) {
+        
+    fn compare(&mut self, register_value: u8, bus: &impl Bus<u16>, address: &AddressResult) -> Result<(), OperationError>  {
+        let address = address.address().ok_or(OperationError::AddressModeNotSupported)?;
+        let value = bus.read_byte(address);
         let result = register_value.wrapping_sub(value);
         self.set_status(StatusFlag::Carry, register_value >= value);
-        self.set_status(StatusFlag::Zero, result == 0);
-        self.set_status(StatusFlag::Negative, result & 0x80 != 0);
+        self.set_status_zn(result);
+        Ok(())
+    }
+
+    fn set_accumulator(&mut self, value: u8) {
+        self.register_a = value;
+        self.set_status_zn(value);
+    }
+
+    fn set_register_x(&mut self, value: u8) {
+        self.register_x = value;
+        self.set_status_zn(value);
+    }
+
+    fn set_register_y(&mut self, value: u8) {
+        self.register_y = value;
+        self.set_status_zn(value);
+    }
+
+    fn set_status_zn(&mut self, value: u8) {
+        self.set_status(StatusFlag::Negative, value & 0x80 == 0x80);
+        self.set_status(StatusFlag::Zero, value == 0);
     }
 }
 

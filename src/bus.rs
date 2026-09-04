@@ -59,3 +59,11 @@ fn read_word_little_endian(bus: &impl Bus<u16>, address: u16) -> u16 {
     let high = bus.read_byte(address.wrapping_add(1)) as u16;
     high << 8 | low
 }
+
+pub fn load_binary(mem: &mut [u8], path: &str, load_addr: u16) -> std::io::Result<()> {
+    let data = std::fs::read(path)?;
+    let start = load_addr as usize;
+    let end = start + data.len();
+    mem[start..end].copy_from_slice(&data);
+    Ok(())
+}

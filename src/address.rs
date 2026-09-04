@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::{bus::Bus, cpu::Cpu};
+use crate::{address::AddressResult::Implied, bus::Bus, cpu::Cpu};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum AddressMode {
@@ -23,61 +23,72 @@ impl Display for AddressMode {
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct AddressResult
+pub(crate) enum AddressResult
 {
-    pub address: u16,
-    pub page_crossed: bool
+    Implied,
+    Accumulator,
+    Memory(u16),
+    MemoryWithPageCross(u16)
 }
 
-impl From<u16> for AddressResult {
-    fn from(value: u16) -> Self {
-        Self {
-            address: value,
-            page_crossed: false
+impl AddressResult {
+    pub fn address(&self) -> Option<u16> {
+        match self {
+            Implied => None,
+            AddressResult::Accumulator => None,
+            AddressResult::Memory(memory) => Some(*memory),
+            AddressResult::MemoryWithPageCross(memory) => Some(*memory),
         }
+    }
+
+    pub fn has_crossed_page(&self) -> bool {
+        matches!(self, AddressResult::MemoryWithPageCross(_))
     }
 }
 
 impl AddressMode {
     pub fn get_address(&self, cpu:&mut Cpu, bus: &impl Bus<u16>) -> AddressResult {
         match self {
-            AddressMode::Accumulator => { 0u16.into() }
-            AddressMode::Implied => { 0u16.into() },
+            AddressMode::Accumulator => AddressResult::Accumulator,
+            AddressMode::Implied => AddressResult::Implied,
             AddressMode::Immediate => {
-                let address = cpu.program_counter;
+                let address = AddressResult::Memory(cpu.program_counter);
                 cpu.program_counter += 1;
-                address.into()
+                address
+                
             },
             AddressMode::ZeroPage => {
                 let address = bus.read_byte(cpu.program_counter) as u16;
                 cpu.program_counter += 1;
-                address.into()
+                AddressResult::Memory(address)
             },
             AddressMode::ZeroPageX => {
                 let mut address = bus.read_byte(cpu.program_counter) as u16;
                 cpu.program_counter += 1;
                 address += cpu.register_x as u16;
-                return (address & 0xFF).into(); // Masked; 0x0080 + 0x00FF = 0x007F (and not 0x017F)
+                AddressResult::Memory(address & 0xFF) // Masked; 0x0080 + 0x00FF = 0x007F (and not 0x017F)
             }, 
             AddressMode::ZeroPageY => {
                 let mut address = bus.read_byte(cpu.program_counter) as u16;
                 cpu.program_counter += 1;
                 address += cpu.register_y as u16;
-                (address & 0xFF).into() // Masked; 0x0080 + 0x00FF = 0x007F (and not 0x017F)
+                AddressResult::Memory(address & 0xFF) // Masked; 0x0080 + 0x00FF = 0x007F (and not 0x017F)
             },
             AddressMode::Absolute => { 
                 let address = bus.read_word_little_endian(cpu.program_counter);
                 cpu.program_counter += 2;
-                address.into()
+                AddressResult::Memory(address)
             },
             AddressMode::AbsoluteX => {
                 let address = bus.read_word_little_endian(cpu.program_counter);
                 cpu.program_counter += 2;
 
                 let address_offset_x = address.wrapping_add(cpu.register_x as u16);
-                AddressResult {
-                    address: address_offset_x,
-                    page_crossed: address & 0xFF00 != address_offset_x & 0xFF00
+                let page_crossed = address & 0xFF00 != address_offset_x & 0xFF00;
+                if page_crossed {
+                    AddressResult::MemoryWithPageCross(address_offset_x)
+                } else {
+                    AddressResult::Memory(address_offset_x)
                 }
             },
             AddressMode::AbsoluteY => {
@@ -85,9 +96,11 @@ impl AddressMode {
                 cpu.program_counter += 2;
                 
                 let address_offset_y = address.wrapping_add(cpu.register_y as u16);
-                AddressResult {
-                    address: address_offset_y,
-                    page_crossed: address & 0xFF00 != address_offset_y & 0xFF00
+                let page_crossed = address & 0xFF00 != address_offset_y & 0xFF00;
+                if page_crossed {
+                    AddressResult::MemoryWithPageCross(address_offset_y)
+                } else {
+                    AddressResult::Memory(address_offset_y)
                 }
             },
             AddressMode::Indirect => {
@@ -99,7 +112,7 @@ impl AddressMode {
                 let low = bus.read_byte(pointer) as u16; 
                 let high =  bus.read_byte(msb_address) as u16;
                 let address = high << 8 | low;
-                address.into()
+                AddressResult::Memory(address)
             },
             AddressMode::IndirectX => {
                 let mut indirect_address = bus.read_byte(cpu.program_counter) as u16;
@@ -109,7 +122,7 @@ impl AddressMode {
                 
                 let add_low = bus.read_byte(indirect_address) as u16;
                 let add_high = bus.read_byte(indirect_address.wrapping_add(1) & 0xFF) as u16;
-                (add_high << 8 | add_low).into()
+                AddressResult::Memory(add_high << 8 | add_low)
             },
             AddressMode::IndirectY => {
                 let zero_page_address = bus.read_byte(cpu.program_counter) as u16;
@@ -120,9 +133,11 @@ impl AddressMode {
                 let indirect_address = high << 8 | low;
 
                 let indirect_address_offset_y = indirect_address.wrapping_add(cpu.register_y as u16);
-                AddressResult { 
-                    address: indirect_address_offset_y, 
-                    page_crossed: indirect_address & 0xFF00 != indirect_address_offset_y & 0xFF00
+                let page_crossed =  indirect_address & 0xFF00 != indirect_address_offset_y & 0xFF00;
+                if page_crossed {
+                    AddressResult::MemoryWithPageCross(indirect_address_offset_y)
+                } else {
+                    AddressResult::Memory(indirect_address_offset_y)
                 }
             },
             AddressMode::Relative => {
@@ -131,26 +146,14 @@ impl AddressMode {
 
                 let address_offset = relative_value.cast_signed() as i16;
                 let address = cpu.program_counter.wrapping_add_signed(address_offset);
-                AddressResult { 
-                    address, 
-                    page_crossed: address & 0xFF00 != cpu.program_counter & 0xFF00 
+                let page_crossed = address & 0xFF00 != cpu.program_counter & 0xFF00;
+                if page_crossed {
+                    AddressResult::MemoryWithPageCross(address)
+                } else {
+                    AddressResult::Memory(address)
                 }
             }
         }
-    }
-}
-
-
-#[cfg(test)]
-mod address_result_tests {
-    use crate::address::AddressResult;
-    
-    #[test]
-    fn into() {
-        let address: u16 = 0x12;
-        let result: AddressResult = address.into();
-        assert_eq!(result.address, address);
-        assert_eq!(result.page_crossed, false);
     }
 }
 
@@ -167,11 +170,11 @@ mod address_modes_tests {
         let mem = [op::LDA_IMM, 0x05];
         let mut cpu = Cpu::new();
         cpu.program_counter = pc;
-        assert_eq!(AddressMode::Immediate.get_address(&mut cpu, &mem), pc.into());
+        assert_eq!(AddressMode::Immediate.get_address(&mut cpu, &mem), AddressResult::Memory(pc));
     }
     
-    #[test_case(0 => AddressResult::from(op::LDA_IMM as u16); "zero page 1")]
-    #[test_case(1 => AddressResult::from(0x05u16); "zero page 2")]
+    #[test_case(0 => AddressResult::Memory(op::LDA_IMM as u16); "zero page 1")]
+    #[test_case(1 => AddressResult::Memory(0x05); "zero page 2")]
     fn test_zero_page(pc: u16) -> AddressResult {
         let mem = [op::LDA_IMM, 0x05];
         let mut cpu = Cpu::new();
@@ -187,8 +190,8 @@ mod address_modes_tests {
         cpu.program_counter = 0;
         cpu.register_x = 0x15;
         cpu.register_y = 0x53;
-        assert_eq!(AddressMode::ZeroPageX.get_address(&mut cpu, &mem), 0x004B.into(), "add by x");
-        assert_eq!(AddressMode::ZeroPageX.get_address(&mut cpu, &mem), 0x0005.into(), "add by x overflow");
+        assert_eq!(AddressMode::ZeroPageX.get_address(&mut cpu, &mem), AddressResult::Memory(0x004B), "add by x");
+        assert_eq!(AddressMode::ZeroPageX.get_address(&mut cpu, &mem), AddressResult::Memory(0x0005), "add by x overflow");
     }
     
     #[test]
@@ -198,8 +201,8 @@ mod address_modes_tests {
         cpu.program_counter = 0;
         cpu.register_x = 0x15;
         cpu.register_y = 0x53;
-        assert_eq!(AddressMode::ZeroPageY.get_address(&mut cpu, &mem), 0x0089.into(), "add by y");
-        assert_eq!(AddressMode::ZeroPageY.get_address(&mut cpu, &mem), 0x0043.into(), "add by y overflow");
+        assert_eq!(AddressMode::ZeroPageY.get_address(&mut cpu, &mem), AddressResult::Memory(0x0089), "add by y");
+        assert_eq!(AddressMode::ZeroPageY.get_address(&mut cpu, &mem), AddressResult::Memory(0x0043), "add by y overflow");
     }
 
     
@@ -210,8 +213,8 @@ mod address_modes_tests {
         cpu.program_counter = 0;
         cpu.register_x = 0x8E;
         cpu.register_y = 0x8F;
-        assert_eq!(AddressMode::Absolute.get_address(&mut cpu, &mem), 0xF036.into(), "absolute little endian 1");
-        assert_eq!(AddressMode::Absolute.get_address(&mut cpu, &mem), 0xABEF.into(), "absolute little endian 2");
+        assert_eq!(AddressMode::Absolute.get_address(&mut cpu, &mem), AddressResult::Memory(0xF036), "absolute little endian 1");
+        assert_eq!(AddressMode::Absolute.get_address(&mut cpu, &mem), AddressResult::Memory(0xABEF), "absolute little endian 2");
     }
 
     
@@ -222,9 +225,9 @@ mod address_modes_tests {
         cpu.program_counter = 0;
         cpu.register_x = 0x8E;
         cpu.register_y = 0x8F;
-        assert_eq!(AddressMode::AbsoluteX.get_address(&mut cpu, &mem), AddressResult { address: 0xF0C4, page_crossed: false}, "absolute little endian 1");
+        assert_eq!(AddressMode::AbsoluteX.get_address(&mut cpu, &mem), AddressResult::Memory(0xF0C4), "absolute little endian 1");
         assert_eq!(cpu.program_counter, 2);
-        assert_eq!(AddressMode::AbsoluteX.get_address(&mut cpu, &mem), AddressResult { address: 0xAC7D, page_crossed: true}, "absolute little endian 2");
+        assert_eq!(AddressMode::AbsoluteX.get_address(&mut cpu, &mem), AddressResult::MemoryWithPageCross(0xAC7D), "absolute little endian 2");
         assert_eq!(cpu.program_counter, 4);
     }
 
@@ -235,9 +238,9 @@ mod address_modes_tests {
         cpu.program_counter = 0;
         cpu.register_x = 0x8E;
         cpu.register_y = 0x8F;
-        assert_eq!(AddressMode::AbsoluteY.get_address(&mut cpu, &mem), AddressResult { address: 0xF0C5, page_crossed: false}, "absolute little endian 1");
+        assert_eq!(AddressMode::AbsoluteY.get_address(&mut cpu, &mem), AddressResult::Memory(0xF0C5), "absolute little endian 1");
         assert_eq!(cpu.program_counter, 2);
-        assert_eq!(AddressMode::AbsoluteY.get_address(&mut cpu, &mem), AddressResult { address: 0xAC7E, page_crossed: true}, "absolute little endian 2");
+        assert_eq!(AddressMode::AbsoluteY.get_address(&mut cpu, &mem), AddressResult::MemoryWithPageCross(0xAC7E), "absolute little endian 2");
         assert_eq!(cpu.program_counter, 4);
     }
 
@@ -245,7 +248,7 @@ mod address_modes_tests {
     fn test_indirect() {
         let mem = [0x08, 0x00, op::NOP, op::NOP, op::NOP, op::NOP, op::NOP, op::NOP, 0xAB, 0xCD];
         let mut cpu = Cpu::new();
-        assert_eq!(AddressMode::Indirect.get_address(&mut cpu, &mem), AddressResult { address: 0xCDAB, page_crossed: false});
+        assert_eq!(AddressMode::Indirect.get_address(&mut cpu, &mem), AddressResult::Memory(0xCDAB));
         assert_eq!(cpu.program_counter, 2);
     }
 
@@ -260,14 +263,14 @@ mod address_modes_tests {
         let mut cpu = Cpu::new();
         cpu.program_counter = 0x00FF;
 
-        assert_eq!(AddressMode::Indirect.get_address(&mut cpu, &mem), 0xBBAA.into());
+        assert_eq!(AddressMode::Indirect.get_address(&mut cpu, &mem), AddressResult::Memory(0xBBAA));
         assert_eq!(cpu.program_counter, 0x0101);
     }
 
-    #[test_case(0x00, 0x02AB.into(); "zero x")]
-    #[test_case(0x10, 0x05EF.into(); "non zero x")]
-    #[test_case(0x7F, 0xCD80.into(); "boundary msb on wrap around")]
-    #[test_case(0x80, 0x1FCD.into(); "full zero page wrap around")]
+    #[test_case(0x00, AddressResult::Memory(0x02AB); "zero x")]
+    #[test_case(0x10, AddressResult::Memory(0x05EF); "non zero x")]
+    #[test_case(0x7F, AddressResult::Memory(0xCD80); "boundary msb on wrap around")]
+    #[test_case(0x80, AddressResult::Memory(0x1FCD); "full zero page wrap around")]
     fn indirect_x(reg_x: u8, address: AddressResult) {
         let mut memory = [0u8; 0x0300];
         memory[0x0080] = 0xAB;
@@ -287,10 +290,10 @@ mod address_modes_tests {
         assert_eq!(cpu.register_x, reg_x);
     }
 
-    #[test_case(0x00, 0x02AB.into(); "zero offset")]
-    #[test_case(0x10, 0x02BB.into(); "within page offset")]
-    #[test_case(0x54, 0x02FF.into(); "at the boundary, no page cross")]
-    #[test_case(0x55, AddressResult { address: 0x0300, page_crossed: true }; "over the boundary, page crossed")]
+    #[test_case(0x00, AddressResult::Memory(0x02AB); "zero offset")]
+    #[test_case(0x10, AddressResult::Memory(0x02BB); "within page offset")]
+    #[test_case(0x54, AddressResult::Memory(0x02FF); "at the boundary, no page cross")]
+    #[test_case(0x55, AddressResult::MemoryWithPageCross(0x0300); "over the boundary, page crossed")]
     fn indirect_y(reg_y: u8, address: AddressResult) {
         let mut memory = [0u8; 0x0300];
         memory[0x0080] = 0xAB;
